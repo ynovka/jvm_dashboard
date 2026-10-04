@@ -256,6 +256,8 @@ https://localhost:8444 {
 EOF
 chmod 644 "$ROOT/config/Caddyfile"
 caddy validate --config "$ROOT/config/Caddyfile" --adapter caddyfile
+# Validation may provision an internal CA as root. The service owns all TLS storage.
+chown -R caddy:caddy "$ROOT/data/caddy"
 mkdir -p /etc/systemd/system/caddy.service.d
 printf '[Service]\nExecStart=\nExecStart=/usr/bin/caddy run --environ --config %s/config/Caddyfile\nExecReload=\nExecReload=/usr/bin/caddy reload --config %s/config/Caddyfile\nReadWritePaths=%s/data/caddy\nMemoryMax=96M\n' "$ROOT" "$ROOT" "$ROOT" >/etc/systemd/system/caddy.service.d/jvm-dashboard.conf
 cat >"$ROOT/config/prometheus.yml" <<EOF

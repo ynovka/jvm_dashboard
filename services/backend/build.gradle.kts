@@ -14,6 +14,7 @@ dependencies {
     implementation("ch.qos.logback:logback-classic:1.5.18")
     testImplementation(kotlin("test"))
     testImplementation("io.ktor:ktor-server-test-host:3.3.1")
+    testImplementation("io.ktor:ktor-client-websockets:3.3.1")
     testImplementation("org.junit.jupiter:junit-jupiter:5.13.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

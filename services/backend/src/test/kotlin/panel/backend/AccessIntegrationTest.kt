@@ -11,6 +11,9 @@ import panel.shared.*
 import kotlin.test.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeout
+import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.websocket.Frame
 
 class AccessIntegrationTest {
     @Test fun `real MariaDB invitation session CSRF and workspace isolation`() = testApplication {
@@ -61,6 +64,24 @@ class AccessIntegrationTest {
         // A viewer without assignments cannot discover applications or admin data.
         val list=client.get("/api/v1/applications") { header("Cookie",viewerCookie) }; assertEquals(0,json.parseToJsonElement(list.bodyAsText()).jsonObject.long("total"))
         val admin=client.get("/api/v1/nodes/local") { header("Cookie",viewerCookie) }; assertEquals(HttpStatusCode.Forbidden,admin.status)
+        val aid=json.parseToJsonElement(created.bodyAsText()).jsonObject.str("id")
+        val member=json.parseToJsonElement(viewer.bodyAsText()).jsonObject.str("id")
+        val assigned=client.patch("/api/v1/workspaces/$ws/members/$member") { header("Origin",origin); header("Cookie",cookie); header("X-CSRF-Token",csrf); contentType(ContentType.Application.Json); setBody(obj("role" to "VIEWER","appIds" to listOf(aid)).toString()) }
+        assertEquals(HttpStatusCode.OK,assigned.status,assigned.bodyAsText())
+        val oldSession=client.get("/api/v1/auth/me") { header("Cookie",viewerCookie) }; assertEquals(HttpStatusCode.Unauthorized,oldSession.status)
+        val login=post("/auth/login",obj("email" to "viewer@example.test","password" to "password-with-twelve-chars"))
+        val activeCookie=login.headers[HttpHeaders.SetCookie]!!.substringBefore(';')
+        val viewerMe=client.get("/api/v1/auth/me") { header("Cookie",activeCookie) }; val viewerCsrf=json.parseToJsonElement(viewerMe.bodyAsText()).jsonObject.str("csrf")
+        val assignedApp=client.get("/api/v1/applications/$aid") { header("Cookie",activeCookie) }; assertEquals(HttpStatusCode.OK,assignedApp.status)
+        val forbiddenStart=post("/applications/$aid/actions/start",obj(),activeCookie,viewerCsrf); assertEquals(HttpStatusCode.Forbidden,forbiddenStart.status)
+        val socketClient=client.config { install(io.ktor.client.plugins.websocket.WebSockets) }
+        socketClient.webSocket("/ws/applications/$aid",request={ header("Origin",origin); header("Cookie",activeCookie) }) {
+            assertTrue(withTimeout(10000) { incoming.receive() } is Frame.Text)
+            val disabled=client.patch("/api/v1/users/$member") { header("Origin",origin); header("Cookie",cookie); header("X-CSRF-Token",csrf); contentType(ContentType.Application.Json); setBody(obj("disabled" to true).toString()) }; assertEquals(HttpStatusCode.OK,disabled.status)
+            val closed=withTimeout(10000) { incoming.receiveCatching() }
+            assertTrue(closed.isClosed || closed.getOrNull() is Frame.Close,"Revoked session must close its active socket")
+        }
+        socketClient.close()
         val logout=post("/auth/logout",obj(),cookie,csrf); assertEquals(HttpStatusCode.OK,logout.status)
         val expired=client.get("/api/v1/auth/me") { header("Cookie",cookie) }; assertEquals(HttpStatusCode.Unauthorized,expired.status)
     }

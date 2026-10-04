@@ -51,7 +51,7 @@ done
 "${SSH[@]}" "sudo python3 /home/tester/foundation.py /home/tester/$(basename "$ARTIFACTS")/release.json /home/tester/$(basename "$ARTIFACTS")/smoke.jar" | tee vm-results/foundation.log
 "${SSH[@]}" "sudo python3 /home/tester/smoke.py /home/tester/$(basename "$ARTIFACTS")/smoke.jar" | tee vm-results/api.log
 # External HTTPS validates actual routing and static assets outside the VM.
-"${SCP[@]}" tester@127.0.0.1:/opt/jvm_dashboard/data/caddy/pki/authorities/local/root.crt "$WORK/root.crt"
+"${SSH[@]}" 'sudo cat /opt/jvm_dashboard/data/caddy/pki/authorities/local/root.crt' >"$WORK/root.crt"
 curl --cacert "$WORK/root.crt" --resolve panel.jvm.test:8443:127.0.0.1 -fsS https://panel.jvm.test:8443/login >/dev/null
 "${SSH[@]}" "sudo bash /home/tester/$(basename "$ARTIFACTS")/install.sh --artifact-dir /home/tester/$(basename "$ARTIFACTS") --version '$TAG' --domain panel.jvm.test --storage-size 1G --ssh-port 22 --tls-mode internal" | tee vm-results/rerun.log
 "${SSH[@]}" 'sudo reboot' || true
