@@ -29,7 +29,7 @@ services/backend/build/install/backend/bin/backend
 После успешного workflow **Verified Ubuntu release** команда конкретной версии:
 
 ```bash
-sudo bash -c 'set -euo pipefail; apt-get update; apt-get install -y ca-certificates curl; curl -fsSL "https://github.com/ynovka/jvm_dashboard/releases/download/v0.1.0/install.sh" | bash -s -- --repo ynovka/jvm_dashboard --version v0.1.0 --domain test.myshore.party --storage-size 1G --ssh-port 22'
+sudo bash -c 'set -euo pipefail; apt-get update; apt-get install -y ca-certificates curl; curl -fsSL "https://github.com/ynovka/jvm_dashboard/releases/download/v0.1.2/install.sh" | bash -s -- --repo ynovka/jvm_dashboard --version v0.1.2 --domain test.myshore.party --storage-size 1G --ssh-port 22'
 ```
 
 Эта команда требует опубликованного Release; workflow не публикует его при ошибке Ubuntu VM smoke. На сервере не нужны npm install, Gradle или компилятор Kotlin. Node runtime скачивается отдельно и проверяется по checksum в release.json.
@@ -55,9 +55,9 @@ python3 -m unittest discover -s tests/helpers -v
 bash -n deployment/install.sh scripts/package-release.sh scripts/ubuntu-vm-smoke.sh
 ```
 
-UI Playwright проверяет fragment-токен, ошибки API и создание приложения с CSRF, используя контролируемые ответы API. Это не заменяет Linux smoke. `AccessIntegrationTest` с `RUN_DB_TESTS=true` проверяет MariaDB migrations, регистрацию, конкурентное погашение bootstrap, повтор токена, email binding, Secure cookie, CSRF, logout, запрет снятия последнего администратора, исчерпание квот и повтор CREATE с тем же idempotency key и недоступность административных данных наблюдателю. `scripts/run-local-db-tests.py` запускает одноразовый дочерний MariaDB процесс на Windows без регистрации службы.
+UI Playwright проверяет production standalone: fragment-токен, ошибки API и создание приложения с CSRF, используя контролируемые ответы API. Это не заменяет Linux smoke. `AccessIntegrationTest` с `RUN_DB_TESTS=true` проверяет настоящую MariaDB: миграции, регистрацию, конкурентное погашение bootstrap, повтор токена, email binding, Secure cookie, CSRF, logout, последнего администратора, исчерпание квот и повтор CREATE с тем же idempotency key. Назначение прав отзывает старую сессию; наблюдатель видит только назначенное приложение и не выполняет Start; блокировка пользователя закрывает действующий WebSocket. `scripts/run-local-db-tests.py` запускает одноразовый дочерний MariaDB процесс на Windows без регистрации службы.
 
-GitHub check workflow использует MariaDB 10.11. Release workflow собирает standalone + API/agent, manifest/digests/SHA256SUMS, загружает архивы в новую Ubuntu cloud-image VM, проверяет установку, два JDK, upload, реальные параметры Docker, логи, Stop, изоляцию, повтор installer и reboot. Логи сохраняются как artifact.
+GitHub check workflow использует MariaDB 10.11. Release workflow собирает standalone + API/agent, manifest/digests/SHA256SUMS, загружает архивы в новую Ubuntu cloud-image VM. Проверяются CPU throttling, cgroup OOM, XFS hard quota, UID/sandbox, два JDK, upload, HTTP Range download, защита работающего JAR, ETag conflict, копирование каталогов, 32 MiB copy/archive, свежие метрики, изоляция, независимый UFW rollback, повтор installer и reboot с autostart и ручным Stop. Логи сохраняются как artifact.
 
 ## Границы текущей версии
 
