@@ -42,6 +42,11 @@ fun run(args: List<String>, input: String? = null, timeout: Long = 30, allowFail
     val state: String = "STOPPED", val operationId: String = "", val deleted: Boolean = false)
 @Serializable data class Journal(val apps: Map<String,Runtime> = emptyMap(), val results: Map<String,JsonObject> = emptyMap())
 
+// `quota -N -v` reports one device row, including empty projects; its first column is not a project id.
+internal fun quotaUsedKiB(report: String): Long? = report.lineSequence().mapNotNull {
+    Regex("^\\S+\\s+(\\d+)\\s+\\d+\\s+\\d+\\s+").find(it.trim())?.groupValues?.get(1)?.toLongOrNull()
+}.toList().singleOrNull()
+
 class Agent {
     private val statePath=Paths.get(env("AGENT_STATE","/opt/jvm_dashboard/data/agent/journal"))
     private val root=Paths.get(env("APP_STORAGE","/opt/jvm_dashboard/data/apps")).toAbsolutePath()
@@ -104,8 +109,8 @@ class Agent {
         require(!Files.isSymbolicLink(dir))
         // Project ids and per-app host UIDs are journalled before provisioning.
         run(listOf("xfs_quota","-x","-c","project -s -p $dir ${runtime.project}",root.toString()))
-        val report=run(listOf("xfs_quota","-x","-c","quota -p -b -N ${runtime.project}",root.toString()))
-        val used=Regex("(?:^|\\s)#?${runtime.project}\\s+(\\d+)").find(report)?.groupValues?.get(1)?.toLong() ?: throw Problem("QUOTA_REPORT","Cannot read XFS quota usage")
+        val report=run(listOf("xfs_quota","-x","-c","quota -p -b -N -v ${runtime.project}",root.toString()))
+        val used=quotaUsedKiB(report) ?: throw Problem("QUOTA_REPORT","Cannot read XFS quota usage")
         requireValid(used<=runtime.spec.diskMiB*1024L,"QUOTA_IN_USE","Новая квота меньше занятого объёма",409)
         run(listOf("xfs_quota","-x","-c","limit -p bsoft=${runtime.spec.diskMiB}m bhard=${runtime.spec.diskMiB}m isoft=100000 ihard=100000 ${runtime.project}",root.toString()))
         val uid=2000000+runtime.project
@@ -237,13 +242,13 @@ class Agent {
             }
             val s=inspected?.get("State")?.jsonObject; val running=s?.bool("Running")==true
             val stats=if(running) try { json.parseToJsonElement(docker("stats","--no-stream","--format","{{json .}}",container(aid),timeout=5)).jsonObject } catch(_: Exception) { obj() } else obj()
-            val disk=try { run(listOf("xfs_quota","-x","-c","quota -p -b -N ${r.project}",root.toString())).trim() } catch(_: Exception) { "" }
+            val disk=try { run(listOf("xfs_quota","-x","-c","quota -p -b -N -v ${r.project}",root.toString())).trim() } catch(_: Exception) { "" }
             val started=s?.str("StartedAt"); val uptime=if(running && started!=null) try { Duration.between(Instant.parse(started),Instant.now()).seconds } catch(_: Exception) { 0 } else 0
             val stateName=if(running) "RUNNING" else if(r.desired=="RUNNING") "FAILED" else "STOPPED"
             val cpu=stats.str("CPUPerc").removeSuffix("%").toDoubleOrNull()?.div(100) ?: 0.0
             val ip=inspected?.get("NetworkSettings")?.jsonObject?.get("Networks")?.jsonObject?.values?.firstOrNull()?.jsonObject?.str("IPAddress")
             val healthy=if(running && r.spec.healthPort!=null && !ip.isNullOrEmpty()) try { Socket().use { it.connect(InetSocketAddress(ip,r.spec.healthPort!!),1000) }; true } catch(_: Exception) { false } else null
-            val usedBytes=Regex("(?:^|\\s)#?${r.project}\\s+(\\d+)").find(disk)?.groupValues?.get(1)?.toLong()?.times(1024)
+            val usedBytes=quotaUsedKiB(disk)?.times(1024)
             rows[aid]=obj("state" to stateName,"sampledAt" to System.currentTimeMillis(),"generation" to r.generation,"appliedRevision" to r.appliedRevision,"uptimeSeconds" to uptime,"cpuCores" to cpu,"cpuPercent" to cpu/r.spec.cpu*100,"diskUsedBytes" to usedBytes,
                 "memory" to stats.str("MemUsage"),"memoryPercent" to stats.str("MemPerc").removeSuffix("%").toDoubleOrNull(),"diskReport" to disk,"diskMiB" to r.spec.diskMiB,"oomKilled" to (s?.bool("OOMKilled") ?: false),"exitCode" to s?.long("ExitCode"),"healthy" to healthy,"io" to stats.str("BlockIO"),"network" to stats.str("NetIO"),"restarts" to r.restarts)
         }; snapshot=JsonObject(rows); return snapshot

@@ -24,6 +24,9 @@ def main():
     name="jvm-foundation-"+uuid.uuid4().hex[:12]
     try:
         run("xfs_quota","-x","-c",f"project -s -p {volume} {project}",str(STORAGE))
+        empty_quota=run("xfs_quota","-x","-c",f"quota -p -b -N -v {project}",str(STORAGE)).split()
+        assert empty_quota[0].startswith("/dev/") and int(empty_quota[1])==0,empty_quota
+        print("PASS: empty XFS project has a readable device usage row",flush=True)
         run("xfs_quota","-x","-c",f"limit -p bhard=128m bsoft=128m ihard=100 isoft=100 {project}",str(STORAGE))
         os.chown(volume,uid,uid)
         for sub in (".panel-upload",".panel-trash",".panel-tmp"):
