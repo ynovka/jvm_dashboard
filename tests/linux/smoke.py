@@ -58,14 +58,20 @@ def main():
     if sys.argv[1] == "--reboot":
         client.request("/auth/login", "POST", {"email": "admin@example.test", "password": "integration-password-123"})
         client.request("/auth/me")
-        for _ in range(30):
+        expected=json.loads(Path("/root/jvm-smoke-reboot.json").read_text())
+        for _ in range(60):
             apps = client.request("/applications")["items"]
-            if all(a["observed"] == "STOPPED" for a in apps):
+            if apps and all(a["observed"] == expected[a["id"]] for a in apps):
                 break
             time.sleep(2)
-        assert apps and all(a["observed"] == "STOPPED" for a in apps), apps
+        assert apps and all(a["observed"] == expected[a["id"]] for a in apps), apps
         assert subprocess.check_output(["findmnt", "-n", "-o", "OPTIONS", "/opt/jvm_dashboard/data/apps"]).decode().find("prjquota") >= 0
-        print("PASS: reboot preserves accounts, manual Stop and XFS mount")
+        for app in apps:
+            if expected[app["id"]]=="RUNNING":
+                assert "JVM_SMOKE_READY" in client.request("/applications/"+app["id"]+"/logs")["text"]
+                stopped=client.request("/applications/"+app["id"]+"/actions/stop","POST",{},202)
+                client.wait(stopped["operationId"])
+        print("PASS: reboot preserves accounts, manual Stop, autostart and XFS mount")
         return
     journal = subprocess.check_output(["journalctl", "-u", "jvm-dashboard-api", "-o", "cat", "--no-pager"]).decode()
     invitation = re.findall(r"BOOTSTRAP_INVITATION=.*#token=([^\s]+)", journal)[-1]
@@ -76,10 +82,12 @@ def main():
     ws = me["workspaces"][0]["id"]
     runtimes = client.request("/runtimes")["items"]
     assert len(runtimes) >= 2
+    reboot_expected={}
     for jdk in (8, 21):
         spec = {"name": "smoke-jdk-" + str(jdk), "jdk": jdk, "cpu": .25, "memoryMiB": 256, "diskMiB": 128, "jar": "app.jar", "autostart": True}
         created = client.request("/applications", "POST", {"workspaceId": ws, "spec": spec}, 202)
         aid = created["id"]
+        reboot_expected[aid]="STOPPED"
         client.wait(created["operationId"])
         files = "/applications/" + aid + "/files"
         jar = Path(sys.argv[1]).read_bytes()
@@ -91,6 +99,12 @@ def main():
         client.request(files, "POST", {"action": "read", "path": "../etc/passwd"}, 400)
         start = client.request("/applications/" + aid + "/actions/start", "POST", {}, 202)
         client.wait(start["operationId"])
+        for _ in range(30):
+            metrics=client.request("/applications/"+aid+"/metrics")
+            if metrics.get("state")=="RUNNING" and metrics.get("diskUsedBytes") is not None:
+                break
+            time.sleep(1)
+        assert metrics["nodeOnline"] and metrics["diskUsedBytes"]>0 and metrics["uptimeSeconds"]>=0,metrics
         # Finishing an upload must use its saved path, not the caller's path.
         replacement=client.request(files,"POST",{"action":"uploadStart","path":"app.jar","size":len(jar)})
         client.request(files,"POST",{"action":"uploadChunk","id":replacement["id"],"offset":0,"data":base64.b64encode(jar).decode()})
@@ -129,6 +143,11 @@ def main():
     assert viewer.request("/applications")["total"] == 0
     viewer.request("/applications/" + aid, expected=404)
     viewer.request("/applications/" + aid + "/actions/start", "POST", {}, 404)
+    # One running app must autostart; the other must remain manually stopped.
+    start=client.request("/applications/"+aid+"/actions/start","POST",{},202)
+    client.wait(start["operationId"])
+    reboot_expected[aid]="RUNNING"
+    Path("/root/jvm-smoke-reboot.json").write_text(json.dumps(reboot_expected))
     rules = client.request("/nodes/local/firewall", "POST", {"action": "status"})
     assert rules["enabled"]
     print("PASS: invitations, object isolation, UFW status")
