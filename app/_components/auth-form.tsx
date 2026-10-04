@@ -6,24 +6,35 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "./api";
 import { ErrorBox } from "./shell";
 
+// Keep the invitation in this browser's module memory across an App Router remount.
+// The fragment is consumed immediately; it never enters storage or a request URL.
+let invitationToken = "";
+
 export default function AuthForm({ register = false }: { register?: boolean }) {
-  const [token, setToken] = useState("");
+  const [token, setToken] = useState(() => (register ? invitationToken : ""));
   const [error, setError] = useState<unknown>();
   const [pending, setPending] = useState(false);
   const router = useRouter();
   const client = useQueryClient();
   useEffect(() => {
     function consume() {
-      const value = new URLSearchParams(window.location.hash.slice(1)).get("token");
-      if (value) {
-        window.history.replaceState(null, "", window.location.pathname);
+      const value = new URLSearchParams(window.location.hash.slice(1)).get(
+        "token",
+      );
+      if (register && value) {
+        invitationToken = value;
         setToken(value);
+        window.history.replaceState(
+          window.history.state,
+          "",
+          window.location.pathname,
+        );
       }
     }
     consume();
     window.addEventListener("hashchange", consume);
     return () => window.removeEventListener("hashchange", consume);
-  }, []);
+  }, [register]);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setPending(true);
@@ -35,6 +46,7 @@ export default function AuthForm({ register = false }: { register?: boolean }) {
         password: form.get("password"),
         ...(register ? { name: form.get("name"), token } : {}),
       });
+      if (register) invitationToken = "";
       client.clear();
       router.replace("/");
     } catch (e) {
