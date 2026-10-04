@@ -244,13 +244,13 @@ class Agent {
             val ip=inspected?.get("NetworkSettings")?.jsonObject?.get("Networks")?.jsonObject?.values?.firstOrNull()?.jsonObject?.str("IPAddress")
             val healthy=if(running && r.spec.healthPort!=null && !ip.isNullOrEmpty()) try { Socket().use { it.connect(InetSocketAddress(ip,r.spec.healthPort!!),1000) }; true } catch(_: Exception) { false } else null
             val usedBytes=Regex("(?:^|\\s)#?${r.project}\\s+(\\d+)").find(disk)?.groupValues?.get(1)?.toLong()?.times(1024)
-            rows[aid]=obj("state" to stateName,"generation" to r.generation,"appliedRevision" to r.appliedRevision,"uptimeSeconds" to uptime,"cpuCores" to cpu,"cpuPercent" to cpu/r.spec.cpu*100,"diskUsedBytes" to usedBytes,
+            rows[aid]=obj("state" to stateName,"sampledAt" to System.currentTimeMillis(),"generation" to r.generation,"appliedRevision" to r.appliedRevision,"uptimeSeconds" to uptime,"cpuCores" to cpu,"cpuPercent" to cpu/r.spec.cpu*100,"diskUsedBytes" to usedBytes,
                 "memory" to stats.str("MemUsage"),"memoryPercent" to stats.str("MemPerc").removeSuffix("%").toDoubleOrNull(),"diskReport" to disk,"diskMiB" to r.spec.diskMiB,"oomKilled" to (s?.bool("OOMKilled") ?: false),"exitCode" to s?.long("ExitCode"),"healthy" to healthy,"io" to stats.str("BlockIO"),"network" to stats.str("NetIO"),"restarts" to r.restarts)
         }; snapshot=JsonObject(rows); return snapshot
     }
     fun metrics(): String = buildString {
         append("jvm_panel_agent_up ${if(ready) 1 else 0}\n")
-        for((aid,s) in snapshot) { val o=s.jsonObject; val labels="app=\"$aid\",generation=\"${o.long("generation")}\""; append("jvm_app_cpu_cores{$labels} ${o.str("cpuCores","0")}\n"); append("jvm_app_memory_percent{$labels} ${o["memoryPercent"]?.jsonPrimitive?.doubleOrNull ?: 0.0}\n"); append("jvm_app_uptime_seconds{$labels} ${o.long("uptimeSeconds")}\n"); append("jvm_app_disk_bytes{$labels} ${o.long("diskUsedBytes")}\n") }
+        for((aid,s) in snapshot) { val o=s.jsonObject; if(System.currentTimeMillis()-o.long("sampledAt")>15000) continue; val labels="app=\"$aid\",generation=\"${o.long("generation")}\""; append("jvm_app_cpu_cores{$labels} ${o.str("cpuCores","0")}\n"); append("jvm_app_memory_percent{$labels} ${o["memoryPercent"]?.jsonPrimitive?.doubleOrNull ?: 0.0}\n"); append("jvm_app_uptime_seconds{$labels} ${o.long("uptimeSeconds")}\n"); append("jvm_app_disk_bytes{$labels} ${o.long("diskUsedBytes")}\n") }
     }
 }
 operator fun JsonObject.plus(other: JsonObject)=JsonObject(toMap()+other.toMap())

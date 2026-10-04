@@ -91,11 +91,12 @@ fun session(store: Store, call: ApplicationCall, userId: String) {
     val insecure = env("ALLOW_INSECURE_LOCAL","false") == "true" && env("PUBLIC_URL").matches(Regex("http://(localhost|127\\.0\\.0\\.1):[0-9]+"))
     call.response.cookies.append(Cookie("jvm_session",t,path="/",secure=!insecure,httpOnly=true,extensions=mapOf("SameSite" to "Strict")))
 }
-fun rate(key: String) {
+fun rate(key: String,limit: Int=10) {
     if (attemptWindows.size > 10000) attemptWindows.entries.removeIf { now()-it.value.first > 60000 }
     val count = attemptWindows.compute(key) { _,old -> if (old==null || now()-old.first>60000) now() to 1 else old.first to old.second+1 }!!
-    requireValid(count.second <= 10,"RATE_LIMIT","Слишком много попыток. Подождите минуту",429)
+    requireValid(count.second <= limit,"RATE_LIMIT","Слишком много попыток. Подождите минуту",429)
 }
+fun authRate(call: ApplicationCall) { rate("auth-ip:"+(call.request.headers["X-Forwarded-For"]?.substringAfterLast(',')?.trim()?.take(64) ?: "loopback"),30) }
 fun sanitized(store: Store, row: JsonObject): JsonObject {
     val spec=json.decodeFromString<Spec>(row.str("spec"))
     return JsonObject(row.filterKeys { it != "spec" }) + obj("spec" to json.encodeToJsonElement(store.masked(spec)))
@@ -192,8 +193,13 @@ fun Application.panel(store: Store) {
         get("/metrics") { call.respondText("jvm_panel_api_up 1\n",ContentType.Text.Plain) }
         route("/api/v1") {
             post("/auth/register") {
-                origin(call); val b=call.body(); val email=b.str("email").trim().lowercase(); val password=b.str("password").toCharArray()
+                origin(call); authRate(call); val b=call.body(); val email=b.str("email").trim().lowercase(); val password=b.str("password").toCharArray()
                 rate("register:$email"); requireValid(email.length<=254 && email.matches(Regex("[^@\\s]+@[^@\\s]+\\.[^@\\s]+")) && password.size in 12..128 && b.str("name").length in 1..80,"INVALID_ACCOUNT","Укажите имя, email и пароль от 12 до 128 символов")
+                // Reject random invitations before expensive Argon2 work; the transaction below rechecks under lock.
+                store.read { c ->
+                    val invite=c.one("SELECT * FROM invitations WHERE token_hash=?",hash(b.str("token")))
+                    requireValid(invite!=null && !invite.bool("used") && !invite.bool("revoked") && invite.long("expires")>now() && (invite.str("email").isEmpty() || invite.str("email")==email),"INVALID_INVITATION","Приглашение недействительно")
+                }
                 val ph=withContext(Dispatchers.IO) { passwordWorkers.withPermit { Argon2Factory.create(Argon2Factory.Argon2Types.ARGON2id).hash(3,65536,1,password) } }; password.fill('\u0000')
                 val userId=store.tx { c ->
                     c.one("SELECT id FROM bootstrap_state WHERE id=1 FOR UPDATE")
@@ -211,7 +217,7 @@ fun Application.panel(store: Store) {
                 }; session(store,call,userId); call.respond(HttpStatusCode.Created,obj("id" to userId))
             }
             post("/auth/login") {
-                origin(call); val b=call.body(); val email=b.str("email").trim().lowercase(); rate("login:$email")
+                origin(call); authRate(call); val b=call.body(); val email=b.str("email").trim().lowercase(); rate("login:$email")
                 requireValid(b.str("password").length<=128,"INVALID_LOGIN","Неверный email или пароль",401)
                 val row=store.read { it.one("SELECT * FROM users WHERE email=?",email) }
                 val argon=Argon2Factory.create(Argon2Factory.Argon2Types.ARGON2id); val chars=b.str("password").toCharArray()
@@ -476,5 +482,5 @@ fun Application.panel(store: Store) {
 fun snapshot(store: Store, u: User, aid: String): JsonObject = store.read { c ->
     val a=app(c,u,aid); val n=c.one("SELECT * FROM nodes WHERE id=?",a.str("node_id"))!!; val fresh=now()-n.long("heartbeat")<15000
     val snapshot=json.parseToJsonElement(n.str("snapshot")).jsonObject[aid] as? JsonObject ?: obj()
-    snapshot+obj("nodeOnline" to fresh,"sampledAt" to n.long("heartbeat"),"observed" to a.str("observed"),"activeOperation" to a["active_operation"],"revision" to a.long("revision"),"appliedRevision" to a.long("applied_revision"))
+    snapshot+obj("nodeOnline" to fresh,"sampledAt" to snapshot.long("sampledAt",n.long("heartbeat")),"observed" to a.str("observed"),"activeOperation" to a["active_operation"],"revision" to a.long("revision"),"appliedRevision" to a.long("applied_revision"))
 }
