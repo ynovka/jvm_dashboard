@@ -1,0 +1,49 @@
+name: Check
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: integration-only
+          MARIADB_DATABASE: jvm_dashboard
+        ports:
+          - 3306:3306
+        options: --health-cmd="healthcheck.sh --connect --innodb_initialized" --health-interval=5s --health-retries=20
+    env:
+      RUN_DB_TESTS: "true"
+      DATABASE_URL: jdbc:mariadb://127.0.0.1:3306/jvm_dashboard?allowLocalInfile=false
+      DATABASE_USER: root
+      DATABASE_PASSWORD: integration-only
+      ENCRYPTION_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+      AGENT_TOKEN: integration-node-token
+      PUBLIC_URL: https://panel.example.test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: chmod +x gradlew
+      - run: npm ci
+      - run: npm run lint && npm run build
+      - run: ./gradlew test installDist --no-daemon
+      - run: python3 -m unittest discover -s tests/helpers -v
+      - run: bash -n deployment/install.sh scripts/package-release.sh scripts/ubuntu-vm-smoke.sh
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results
+          path: test-results/

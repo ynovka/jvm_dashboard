@@ -1,0 +1,24 @@
+[Unit]
+Description=JVM Dashboard Next.js
+After=network-online.target jvm-dashboard-api.service
+Wants=network-online.target
+
+[Service]
+User=jvm-web
+Group=jvm-web
+Environment=NODE_ENV=production HOSTNAME=127.0.0.1 PORT=3000
+WorkingDirectory=/opt/jvm_dashboard/current/frontend
+ExecStart=/opt/jvm_dashboard/runtimes/node/bin/node /opt/jvm_dashboard/current/frontend/server.js
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/jvm_dashboard/current/frontend/.next/cache
+ProtectHome=true
+MemoryMax=192M
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+[Unit]
+Description=JVM Dashboard Linux agent
+After=network-online.target docker.service opt-jvm_dashboard-data-apps.mount caddy.service jvm-dashboard-api.service
+Requires=docker.service opt-jvm_dashboard-data-apps.mount
+Wants=network-online.target caddy.service jvm-dashboard-api.service
+
+[Service]
+EnvironmentFile=/opt/jvm_dashboard/config/agent.env
+Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+Environment="JAVA_OPTS=-Xms32m -Xmx96m"
+WorkingDirectory=/opt/jvm_dashboard/current/agent
+ExecStart=/opt/jvm_dashboard/current/agent/bin/agent
+Restart=on-failure
+RestartSec=5
+UMask=0077
+ProtectHome=true
+MemoryMax=224M
+CPUQuota=100%
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target

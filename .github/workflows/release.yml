@@ -1,0 +1,64 @@
+name: Verified Ubuntu release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (v0.1.0)"
+        required: true
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.16.0"
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: chmod +x gradlew
+      - run: npm ci && npm run lint && npm run build
+      - run: ./gradlew test installDist --no-daemon
+      - run: python3 -m unittest discover -s tests/helpers -v
+      - run: bash scripts/package-release.sh "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+      - run: javac --release 8 -d tests/fixtures/build tests/fixtures/Main.java && jar cfe artifacts/smoke.jar Main -C tests/fixtures/build .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: artifacts/
+  ubuntu-install:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: artifacts
+      - run: bash scripts/ubuntu-vm-smoke.sh artifacts "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ubuntu-install-logs
+          path: vm-results/
+  publish:
+    needs: [build, ubuntu-install]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: artifacts
+      - run: gh release create "$RELEASE_TAG" artifacts/install.sh artifacts/release.json artifacts/SHA256SUMS artifacts/*.tar.gz --repo "$GITHUB_REPOSITORY" --title "JVM Dashboard $RELEASE_TAG" --notes "Ubuntu 24.04 MVP. Installation and reboot smoke tests passed. See docs/MVP.md for deployment and validation scope."
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}

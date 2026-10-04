@@ -1,0 +1,27 @@
+[Unit]
+Description=JVM Dashboard API
+After=network-online.target mariadb.service
+Wants=network-online.target
+Requires=mariadb.service
+
+[Service]
+User=jvm-api
+Group=jvm-api
+EnvironmentFile=/opt/jvm_dashboard/config/backend.env
+Environment=JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
+Environment="JAVA_OPTS=-Xms32m -Xmx160m"
+WorkingDirectory=/opt/jvm_dashboard/current/backend
+ExecStart=/opt/jvm_dashboard/current/backend/bin/backend
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+MemoryMax=320M
+CPUQuota=100%
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
