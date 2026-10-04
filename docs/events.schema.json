@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jvm-dashboard.local/schemas/event-v1",
+  "title": "WebSocket snapshot v1",
+  "type": "object",
+  "required": [
+    "type",
+    "eventId",
+    "nodeOnline",
+    "sampledAt",
+    "observed",
+    "revision",
+    "appliedRevision"
+  ],
+  "properties": {
+    "type": {
+      "const": "snapshot"
+    },
+    "eventId": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "nodeOnline": {
+      "type": "boolean"
+    },
+    "sampledAt": {
+      "type": "integer",
+      "description": "UTC epoch milliseconds"
+    },
+    "observed": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "integer"
+    },
+    "appliedRevision": {
+      "type": "integer"
+    },
+    "cpuCores": {
+      "type": "number"
+    },
+    "cpuPercent": {
+      "type": "number"
+    },
+    "uptimeSeconds": {
+      "type": "integer"
+    },
+    "activeOperation": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": true,
+  "description": "/ws/applications/{app}. Session and exact Origin required; connection limit 5/user. Reconnect obtains a fresh complete snapshot, replacing missed events."
+}

@@ -13,12 +13,16 @@ export default function AuthForm({ register = false }: { register?: boolean }) {
   const router = useRouter();
   const client = useQueryClient();
   useEffect(() => {
-    const value =
-      new URLSearchParams(window.location.hash.slice(1)).get("token") ?? "";
-    window.history.replaceState(null, "", window.location.pathname);
-    // The fragment is consumed once from the browser and kept only in component memory.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setToken(value);
+    function consume() {
+      const value = new URLSearchParams(window.location.hash.slice(1)).get("token");
+      if (value) {
+        window.history.replaceState(null, "", window.location.pathname);
+        setToken(value);
+      }
+    }
+    consume();
+    window.addEventListener("hashchange", consume);
+    return () => window.removeEventListener("hashchange", consume);
   }, []);
   async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();

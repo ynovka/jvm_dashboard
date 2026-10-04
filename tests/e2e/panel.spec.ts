@@ -13,12 +13,12 @@ test("registration consumes the fragment and requires an invitation", async ({ p
     await route.fulfill({ status: 400, json: { code: "INVALID_INVITATION", message: "Приглашение недействительно" } });
   });
   await page.getByRole("button", { name: "Создать аккаунт" }).click();
-  await expect(page.getByRole("alert")).toHaveText("Приглашение недействительно");
+  await expect(page.getByRole("alert").filter({ hasText: "Приглашение недействительно" })).toBeVisible();
 });
 test("API failure shows a useful retry state", async ({ page }) => {
   await page.route("**/api/v1/auth/me", route => route.fulfill({ status: 503, body: "backend unavailable" }));
   await page.goto("/");
-  await expect(page.getByRole("alert")).toContainText("API недоступен");
+  await expect(page.getByRole("alert").filter({ hasText: "API недоступен" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Повторить подключение" })).toBeVisible();
 });
 test("create application sends the real specification and pending operation", async ({ page }) => {
