@@ -6,7 +6,7 @@ MVP включает регистрацию по приглашениям, пр�
 
 - [Установка, разработка и ограничения](docs/MVP.md)
 - [Результаты проверок](docs/MVP_VALIDATION.md)
-- [Архитектурные решения](docs/ADR-001-runtime.md)
+- [Архитектурные решения](docs/ADR-001-MVP.md)
 - [HTTP API](docs/openapi.json) и [WebSocket](docs/events.schema.json)
 - [Исходный план](docs/JVM_PANEL_PLAN.md)
 

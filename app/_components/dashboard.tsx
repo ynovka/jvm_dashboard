@@ -260,7 +260,24 @@ export default function Dashboard() {
               </button>
             </div>
             <SpecForm
-              initial={emptySpec}
+              initial={{
+                ...emptySpec,
+                cpu: Math.min(emptySpec.cpu, ws?.cpu ?? emptySpec.cpu),
+                memoryMiB: Math.max(
+                  256,
+                  Math.min(
+                    emptySpec.memoryMiB,
+                    ws?.memory_mib ?? emptySpec.memoryMiB,
+                  ),
+                ),
+                diskMiB: Math.max(
+                  128,
+                  Math.min(
+                    emptySpec.diskMiB,
+                    ws?.disk_mib ?? emptySpec.diskMiB,
+                  ),
+                ),
+              }}
               button="Создать приложение"
               onSave={async (spec) => {
                 const result = await api<{ id: string }>(

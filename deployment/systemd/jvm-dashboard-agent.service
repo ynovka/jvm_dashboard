@@ -14,7 +14,7 @@ Restart=on-failure
 RestartSec=5
 UMask=0077
 ProtectHome=true
-MemoryMax=224M
+MemoryMax=384M
 CPUQuota=100%
 LimitNOFILE=8192
 

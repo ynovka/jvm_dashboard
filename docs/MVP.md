@@ -24,7 +24,7 @@ services/backend/build/install/backend/bin/backend
 
 ## Установка
 
-Цель: Ubuntu 24.04 amd64, systemd, минимум 2 GiB RAM, DNS домена на сервер и открытые TCP 80/443. Для VPS 2 GiB системный резерв — 1536 MiB; доступный бюджет приложений считается по реальному MemTotal. В этой конфигурации разумно начать с одного приложения 256 MiB. Установщик сохраняет SSH и чужие UFW rules, отказывается изменять сторонние службы/данные и существующий не-XFS файл.
+Цель: Ubuntu 24.04 amd64, systemd, минимум 2 GiB RAM, DNS домена на сервер и открытые TCP 80/443. Кроме размера XFS требуется минимум 4 GiB свободного места под хост и runtime; существующие образы и данные учитываются отдельно. Для VPS 2 GiB системный резерв — 1536 MiB; доступный бюджет приложений считается по реальному MemTotal. В этой конфигурации разумно начать с одного приложения 256 MiB. Установщик сохраняет SSH и чужие UFW rules, отказывается изменять сторонние службы/данные и существующий не-XFS файл.
 
 После успешного workflow **Verified Ubuntu release** команда конкретной версии:
 
@@ -55,7 +55,7 @@ python3 -m unittest discover -s tests/helpers -v
 bash -n deployment/install.sh scripts/package-release.sh scripts/ubuntu-vm-smoke.sh
 ```
 
-UI Playwright проверяет fragment-токен, ошибки API и создание приложения с CSRF, используя контролируемые ответы API. Это не заменяет Linux smoke. `AccessIntegrationTest` с `RUN_DB_TESTS=true` проверяет MariaDB migrations, регистрацию, повтор токена, email binding, Secure cookie, CSRF, logout и недоступность административных данных наблюдателю. `scripts/run-local-db-tests.py` запускает одноразовый дочерний MariaDB процесс на Windows без регистрации службы.
+UI Playwright проверяет fragment-токен, ошибки API и создание приложения с CSRF, используя контролируемые ответы API. Это не заменяет Linux smoke. `AccessIntegrationTest` с `RUN_DB_TESTS=true` проверяет MariaDB migrations, регистрацию, конкурентное погашение bootstrap, повтор токена, email binding, Secure cookie, CSRF, logout, запрет снятия последнего администратора, исчерпание квот и повтор CREATE с тем же idempotency key и недоступность административных данных наблюдателю. `scripts/run-local-db-tests.py` запускает одноразовый дочерний MariaDB процесс на Windows без регистрации службы.
 
 GitHub check workflow использует MariaDB 10.11. Release workflow собирает standalone + API/agent, manifest/digests/SHA256SUMS, загружает архивы в новую Ubuntu cloud-image VM, проверяет установку, два JDK, upload, реальные параметры Docker, логи, Stop, изоляцию, повтор installer и reboot. Логи сохраняются как artifact.
 
@@ -67,6 +67,7 @@ GitHub check workflow использует MariaDB 10.11. Release workflow со�
 - После удаления с сохранением файлов volume остаётся на сервере и продолжает занимать дисковый резерв. Публичный restore архивов резервных копий относится к этапу 8.
 - Метрики Prometheus — CPU cores, RAM percent, disk blocks и uptime; heap/GC/JMX не обещаются произвольному JAR.
 - Dependency audit показывает advisory в dev-only цепочке braces/micromatch/eslint-config-next; runtime-зависимости проверяются отдельно. Next.js не понижается ради предложенного npm audit downgrade.
-- Linux failure tests (внешняя проверка портов, гонки, archive bombs, crash/lease recovery, фактический CPU/OOM/disk quota) должны пройти на целевом узле перед объявлением MVP принятым.
+- Аудит хранится 90 дней; успешные/неуспешные временные FILE/LOGS/FIREWALL ответы удаляются после выдачи и очищаются по TTL 1 час при разрыве клиента.
+- Каталог JDK хранит digest; изменение каталога влияет на новые ревизии. Откат создаёт новую ревизию с прежним digest и ENV, затем требует применения с перезапуском.
 
 Фактические результаты сборок, установки и оставшиеся ограничения записываются в [MVP_VALIDATION.md](MVP_VALIDATION.md).

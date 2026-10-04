@@ -3,6 +3,7 @@ import base64
 import concurrent.futures
 import http.cookiejar
 import json
+import os
 import re
 import ssl
 import subprocess
@@ -45,6 +46,12 @@ class Client:
             time.sleep(1)
         raise AssertionError("Operation did not finish")
 
+    def download(self,aid,path,expected,headers=None):
+        request=urllib.request.Request(ORIGIN+"/api/v1/applications/"+aid+"/files/download?path="+urllib.parse.quote(path),headers=headers or {})
+        with self.http.open(request,timeout=150) as response:
+            assert response.status==expected,response.status
+            return response.read()
+
 
 def main():
     client = Client()
@@ -79,14 +86,41 @@ def main():
         upload = client.request(files, "POST", {"action": "uploadStart", "path": "app.jar", "size": len(jar)})
         client.request(files, "POST", {"action": "uploadChunk", "id": upload["id"], "offset": 0, "data": base64.b64encode(jar).decode()})
         client.request(files, "POST", {"action": "uploadFinish", "id": upload["id"], "path": "app.jar"})
+        assert client.download(aid,"app.jar",200)==jar
+        assert client.download(aid,"app.jar",206,{"Range":"bytes=0-15"})==jar[:16]
         client.request(files, "POST", {"action": "read", "path": "../etc/passwd"}, 400)
         start = client.request("/applications/" + aid + "/actions/start", "POST", {}, 202)
         client.wait(start["operationId"])
+        # Finishing an upload must use its saved path, not the caller's path.
+        replacement=client.request(files,"POST",{"action":"uploadStart","path":"app.jar","size":len(jar)})
+        client.request(files,"POST",{"action":"uploadChunk","id":replacement["id"],"offset":0,"data":base64.b64encode(jar).decode()})
+        client.request(files,"POST",{"action":"uploadFinish","id":replacement["id"],"path":"unrelated.txt"},409)
+        client.request(files,"POST",{"action":"uploadCancel","id":replacement["id"]})
         limits = json.loads(subprocess.check_output(["docker", "inspect", "jvm-" + aid]))[0]["HostConfig"]
         assert limits["Memory"] == 256 * 1024**2 and limits["MemorySwap"] == limits["Memory"] and limits["NanoCpus"] == 250000000 and limits["ReadonlyRootfs"]
         assert "JVM_SMOKE_READY" in client.request("/applications/" + aid + "/logs")["text"]
         stopped = client.request("/applications/" + aid + "/actions/stop", "POST", {}, 202)
         client.wait(stopped["operationId"])
+        # Large file helpers have a bounded service memory budget.
+        client.request(files,"POST",{"action":"write","path":"config.json","text":"{}"})
+        old=client.request(files,"POST",{"action":"read","path":"config.json"})
+        client.request(files,"POST",{"action":"write","path":"config.json","text":"{\"updated\":true}","etag":old["etag"]})
+        client.request(files,"POST",{"action":"write","path":"config.json","text":"stale","etag":old["etag"]},409)
+        client.request(files,"POST",{"action":"mkdir","path":"directory"})
+        client.request(files,"POST",{"action":"write","path":"directory/a.txt","text":"copied"})
+        client.request(files,"POST",{"action":"copy","path":"directory","target":"directory-copy"})
+        assert client.request(files,"POST",{"action":"read","path":"directory-copy/a.txt"})["text"]=="copied"
+        if jdk==21:
+            volume=Path("/opt/jvm_dashboard/data/apps")/aid
+            user=json.loads(subprocess.check_output(["docker","inspect","jvm-"+aid]))[0]["Config"]["User"].split(":")[0]
+            with open(volume/"large.bin","wb") as output:
+                for _ in range(32): output.write(os.urandom(1024**2))
+            os.chown(volume/"large.bin",int(user),int(user))
+            client.request(files,"POST",{"action":"copy","path":"large.bin","target":"large-copy.bin"})
+            client.request(files,"POST",{"action":"archive","path":"","paths":["large.bin"],"target":"large.zip"})
+            assert client.download(aid,"large.bin",206,{"Range":"bytes=1048576-1048591"})==(volume/"large.bin").read_bytes()[1048576:1048592]
+            for name in ("large.bin","large-copy.bin","large.zip"): (volume/name).unlink()
+            print("PASS: 32 MiB copy/archive and ranged download within service memory caps")
         print("PASS: JDK", jdk, "upload, Start, enforced Docker limits, logs, Stop")
     invite = client.request("/workspaces/" + ws + "/invitations", "POST", {"role": "VIEWER", "email": "viewer@example.test"}, 201)
     viewer = Client()
@@ -98,6 +132,13 @@ def main():
     rules = client.request("/nodes/local/firewall", "POST", {"action": "status"})
     assert rules["enabled"]
     print("PASS: invitations, object isolation, UFW status")
+    change=client.request("/nodes/local/firewall","POST",{"action":"add","generation":rules["generation"],"protocol":"tcp","decision":"deny","port":"18080","source":"127.0.0.1","description":"smoke rollback"})
+    assert change["changeId"]
+    # The timer must recover without a request from this process.
+    time.sleep(95)
+    after=client.request("/nodes/local/firewall","POST",{"action":"status"})
+    assert after["pending"] is None and after["rules"]==rules["rules"],after
+    print("PASS: independent UFW rollback timer")
 
 
 if __name__ == "__main__":

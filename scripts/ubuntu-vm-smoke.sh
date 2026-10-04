@@ -7,7 +7,14 @@ sudo apt-get update
 sudo apt-get install -y qemu-system-x86 cloud-image-utils
 WORK=$(mktemp -d)
 VM_PID=
-cleanup() { [[ -z $VM_PID ]] || kill "$VM_PID" 2>/dev/null || true; [[ $WORK == /tmp/tmp.* ]] && rm -rf -- "$WORK"; }
+cleanup() {
+  status=$?
+  if ((status!=0)) && [[ -n $VM_PID ]] && [[ -f $WORK/key ]]; then
+    "${SSH[@]}" 'sudo journalctl -u jvm-dashboard-api -u jvm-dashboard-agent -u caddy --no-pager | sed "s/BOOTSTRAP_INVITATION=.*/BOOTSTRAP_INVITATION=[REDACTED]/"' >vm-results/failure-services.log 2>&1 || true
+  fi
+  [[ -z $VM_PID ]] || kill "$VM_PID" 2>/dev/null || true
+  [[ $WORK == /tmp/tmp.* ]] && rm -rf -- "$WORK"
+}
 trap cleanup EXIT
 curl -fsSL https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img -o "$WORK/base.img"
 curl -fsSL https://cloud-images.ubuntu.com/noble/current/SHA256SUMS -o "$WORK/SHA256SUMS"

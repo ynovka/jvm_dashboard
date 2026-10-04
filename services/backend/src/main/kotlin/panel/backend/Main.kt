@@ -77,8 +77,8 @@ fun role(c: Connection, u: User, workspace: String): String {
     if (u.admin) return "OWNER"
     return c.one("SELECT role FROM memberships WHERE user_id=? AND workspace_id=?",u.id,workspace)?.str("role") ?: throw Problem("NOT_FOUND","Объект не найден",404)
 }
-fun app(c: Connection, u: User, appId: String, write: Boolean = false, owner: Boolean = false): JsonObject {
-    val a = c.one("SELECT * FROM applications WHERE id=? AND deleted=FALSE",appId) ?: throw Problem("NOT_FOUND","Приложение не найдено",404)
+fun app(c: Connection, u: User, appId: String, write: Boolean = false, owner: Boolean = false, allowDeleted: Boolean = false): JsonObject {
+    val a = c.one("SELECT * FROM applications WHERE id=? AND (?=TRUE OR deleted=FALSE)",appId,allowDeleted) ?: throw Problem("NOT_FOUND","Приложение не найдено",404)
     val r = role(c,u,a.str("workspace_id"))
     requireValid(r == "OWNER" || (!owner && c.one("SELECT app_id FROM application_permissions WHERE app_id=? AND user_id=?",appId,u.id) != null),"NOT_FOUND","Приложение не найдено",404)
     requireValid(!write || r in setOf("OWNER","OPERATOR"),"FORBIDDEN","Недостаточно прав",403)
@@ -346,7 +346,7 @@ fun Application.panel(store: Store) {
                 val operation=store.tx { c -> c.one("SELECT id FROM nodes WHERE id='local' FOR UPDATE"); val a=app(c,u,aid,true,true); requireValid(a.str("active_operation").isEmpty(),"BUSY","Дождитесь текущей операции",409); val g=a.long("generation")+1; val op=enqueue(c,u,"DELETE",aid,obj("keepFiles" to keep),g,null); c.execute("UPDATE applications SET observed='DELETING',desired='STOPPED',generation=?,active_operation=? WHERE id=?",g,op,aid); store.audit(c,u.id,"APP_DELETE",aid,call.requestId()); op }; call.respond(HttpStatusCode.Accepted,obj("operationId" to operation))
             }
             get("/operations/{op}") {
-                val u=auth(store,call); call.respond(store.read { c -> val o=c.one("SELECT id,app_id,user_id,kind,status,result,created FROM operations WHERE id=?",call.parameters["op"]) ?: throw Problem("NOT_FOUND","Операция не найдена",404); if(o.str("app_id").isNotEmpty()) app(c,u,o.str("app_id")) else requireValid(u.admin || o.str("user_id")==u.id,"NOT_FOUND","Операция не найдена",404); o })
+                val u=auth(store,call); call.respond(store.read { c -> val o=c.one("SELECT id,app_id,user_id,kind,status,result,created FROM operations WHERE id=?",call.parameters["op"]) ?: throw Problem("NOT_FOUND","Операция не найдена",404); if(o.str("app_id").isNotEmpty()) app(c,u,o.str("app_id"),allowDeleted=true) else requireValid(u.admin || o.str("user_id")==u.id,"NOT_FOUND","Операция не найдена",404); o })
             }
             get("/applications/{app}/metrics") { val u=auth(store,call); val aid=call.parameters["app"]!!; call.respond(snapshot(store,u,aid)) }
             get("/applications/{app}/history") {
@@ -453,7 +453,7 @@ fun Application.panel(store: Store) {
                 if(o.str("status") in setOf("SUCCEEDED","FAILED")) return@tx
                 c.execute("UPDATE operations SET status=?,result=?,lease_until=0 WHERE id=?",if(b.bool("ok")) "SUCCEEDED" else "FAILED",b.toString(),o.str("id"))
                 if(o.long("generation")>0) {
-                    c.execute("UPDATE applications SET observed=?,applied_revision=?,active_operation=NULL WHERE id=? AND generation=? AND active_operation=?",b.str("state",if(b.bool("ok")) "STOPPED" else "FAILED"),b.long("appliedRevision"),o.str("app_id"),o.long("generation"),o.str("id"))
+                    c.execute("UPDATE applications SET observed=?,applied_revision=COALESCE(?,applied_revision),active_operation=NULL WHERE id=? AND generation=? AND active_operation=?",b.str("state",if(b.bool("ok")) "STOPPED" else "FAILED"),b["appliedRevision"]?.jsonPrimitive?.longOrNull,o.str("app_id"),o.long("generation"),o.str("id"))
                     if(b.bool("ok") && o.str("kind") in setOf("START","RESTART","APPLY")) {
                         val a=c.one("SELECT * FROM applications WHERE id=? AND generation=?",o.str("app_id"),o.long("generation"))
                         if(a!=null) { val spec=json.decodeFromString<Spec>(a.str("spec")); c.execute("UPDATE applications SET cpu=?,memory_mib=?,disk_mib=? WHERE id=?",spec.cpu,spec.memoryMiB,spec.diskMiB,a.str("id")); c.execute("UPDATE storage_allocations SET disk_mib=? WHERE app_id=?",spec.diskMiB,a.str("id")); c.execute("DELETE FROM port_allocations WHERE app_id=?",a.str("id")); ports(c,spec,a.str("id")) }
