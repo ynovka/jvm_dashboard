@@ -39,7 +39,7 @@ fi
 if [[ $OWN == false ]]; then
   for s in mariadb mysql prometheus caddy docker; do systemctl is-active --quiet "$s" && die "Existing $s service: use a fresh host"; done
   for p in 80 443 3000 3306 8080 8302 8444 9090 2019; do
-    ss -H -lnt "sport = :$p" | read -r _ && die "Port $p is occupied"
+    if ss -H -lnt "sport = :$p" | read -r _; then die "Port $p is occupied"; fi
   done
   [[ ! -e /var/lib/mysql/mysql ]] || die 'Existing MariaDB data must not be reinitialized'
   [[ ! -f /etc/docker/daemon.json ]] || die 'Existing Docker configuration requires manual migration'
@@ -115,7 +115,7 @@ if ! mountpoint -q "$ROOT/data/apps"; then
   if [[ ! -e $ROOT/storage/app-data.xfs ]]; then
     SIZE_BYTES=$(numfmt --from=iec "$STORAGE_SIZE")
     FREE_BYTES=$(df -B1 --output=avail "$ROOT" | tail -1)
-    ((FREE_BYTES > SIZE_BYTES + 8*1024*1024*1024)) || die 'Insufficient disk: storage plus 8 GiB host reserve required'
+    ((FREE_BYTES > SIZE_BYTES + 4*1024*1024*1024)) || die 'Insufficient disk: storage plus 4 GiB host reserve required'
     fallocate -l "$SIZE_BYTES" "$ROOT/storage/app-data.xfs"
     mkfs.xfs -f "$ROOT/storage/app-data.xfs"
   fi
@@ -219,28 +219,38 @@ cat >"$ROOT/config/Caddyfile" <<EOF
 {
   admin 127.0.0.1:2019
   storage file_system $ROOT/data/caddy
-  servers { protocols h1 h2 }
+  servers {
+    protocols h1 h2
+  }
 }
 $DOMAIN {
   $TLS_EXTRA
   header Referrer-Policy no-referrer
   @api path /api/v1/* /ws/*
   handle @api {
-    request_body { max_size 2MB }
+    request_body {
+      max_size 2MB
+    }
     reverse_proxy 127.0.0.1:8080
   }
-  handle { reverse_proxy 127.0.0.1:3000 }
+  handle {
+    reverse_proxy 127.0.0.1:3000
+  }
 }
 https://localhost:8444 {
   bind 127.0.0.1
   tls $ROOT/config/tls/server.crt $ROOT/config/tls/server.key {
     client_auth {
       mode require_and_verify
-      trust_pool file { pem_file $ROOT/config/tls/ca.crt }
+      trust_pool file {
+        pem_file $ROOT/config/tls/ca.crt
+      }
     }
   }
   @internal path /internal/v1/*
-  handle @internal { reverse_proxy 127.0.0.1:8080 }
+  handle @internal {
+    reverse_proxy 127.0.0.1:8080
+  }
   respond 404
 }
 EOF
@@ -279,6 +289,10 @@ for i in {1..60}; do curl -fsS http://127.0.0.1:8080/ready >/dev/null && curl -f
 curl -fsS http://127.0.0.1:8080/ready >/dev/null
 curl -fsS http://127.0.0.1:8302/ready >/dev/null
 CURL_TLS=(); [[ $TLS_MODE == internal ]] && CURL_TLS=(--cacert "$ROOT/data/caddy/pki/authorities/local/root.crt")
+for i in {1..60}; do
+  if curl -fsS "${CURL_TLS[@]}" --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/login" -o "$STAGING/page.html" 2>/dev/null; then break; fi
+  sleep 2
+done
 curl -fsS "${CURL_TLS[@]}" --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/login" -o "$STAGING/page.html"
 ASSET=$(grep -oE '/_next/static/[^" ]+\.css' "$STAGING/page.html" | head -1)
 [[ -n $ASSET ]] || die 'Standalone CSS assets missing'

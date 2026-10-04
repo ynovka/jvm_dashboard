@@ -1,4 +1,9 @@
-export type Env = { key: string; value: string; secret: boolean };
+export type Env = {
+  key: string;
+  value: string;
+  secret: boolean;
+  description?: string;
+};
 export type Port = {
   host: number;
   container: number;

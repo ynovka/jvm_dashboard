@@ -15,6 +15,7 @@ import re
 import shutil
 import stat
 import sys
+import tarfile
 import time
 import uuid
 import zipfile
@@ -153,9 +154,13 @@ def list_tree(path=""):
 def walk(path, max_files=10000):
     result = []
     pending = [path]
+    visited = 0
     while pending:
         current = pending.pop()
         for e in list_tree(current)["items"]:
+            visited += 1
+            if visited > max_files:
+                raise Failure("FILE_LIMIT", "Превышен лимит файлов")
             child = current + "/" + e["name"] if current else e["name"]
             if e["type"] == "directory":
                 pending.append(child)
@@ -228,8 +233,28 @@ def handle(b):
             elif not stat.S_ISDIR(s.st_mode):
                 raise Failure("UNSAFE_FILE", "Специальный файл")
             if action == "copy":
-                if not stat.S_ISREG(s.st_mode) or s.st_size > 64 * LIMIT:
-                    raise Failure("COPY_LIMIT", "Копирование: обычный файл до 64 MiB")
+                target = validate(b["target"])
+                if stat.S_ISDIR(s.st_mode):
+                    if target == path or target.startswith(path + "/"):
+                        raise Failure("INVALID_PATH", "Нельзя копировать каталог внутрь него самого")
+                    files = walk(path)
+                    if sum(size for _, size in files) > 64 * LIMIT:
+                        raise Failure("COPY_LIMIT", "Копирование каталога: до 64 MiB / 10000 файлов")
+                    handle({"action": "mkdir", "path": target})
+                    pending = [path]
+                    while pending:
+                        directory = pending.pop()
+                        for entry in list_tree(directory)["items"]:
+                            child = directory + "/" + entry["name"]
+                            destination = target + child[len(path):]
+                            if entry["type"] == "directory":
+                                handle({"action": "mkdir", "path": destination})
+                                pending.append(child)
+                            else:
+                                handle({"action": "copy", "path": child, "target": destination})
+                    return {}
+                if s.st_size > 64 * LIMIT:
+                    raise Failure("COPY_LIMIT", "Копирование файла: до 64 MiB")
                 data = bytearray()
                 while chunk := os.read(source, LIMIT):
                     data.extend(chunk)
@@ -343,7 +368,23 @@ def handle(b):
         os.unlink(ROOT + "/" + folder + uid + ".json")
         return {}
     if action == "archive":
-        files = walk(path)
+        paths = b.get("paths", [path])
+        if not isinstance(paths, list) or not 1 <= len(paths) <= 100:
+            raise Failure("INVALID_PATH", "Выберите до 100 объектов")
+        chosen = {}
+        for selected in paths:
+            validate(selected, empty=True)
+            fd = opened(selected)
+            try:
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    chosen.update(walk(selected))
+                else:
+                    chosen[selected] = regular(fd).st_size
+            finally:
+                os.close(fd)
+        files = list(chosen.items())
+        if len(files) > 10000:
+            raise Failure("FILE_LIMIT", "Превышен лимит файлов")
         if sum(size for _, size in files) > 64 * LIMIT:
             raise Failure("ARCHIVE_LIMIT", "Архивирование: до 64 MiB")
         data = io.BytesIO()
@@ -360,6 +401,37 @@ def handle(b):
         return atomic(validate(target), data.getvalue())
     if action == "extract":
         fd = opened(path)
+        if regular(fd).st_size > 64 * LIMIT:
+            os.close(fd)
+            raise Failure("ARCHIVE_LIMIT", "Размер архива: до 64 MiB")
+        if not path.lower().endswith(".zip"):
+            with os.fdopen(fd, "rb") as f, tarfile.open(fileobj=f, mode="r:*") as archive:
+                entries = []
+                total = 0
+                for entry in archive:
+                    name = entry.name.removeprefix("./").rstrip("/")
+                    if name in ("", ".") and entry.isdir():
+                        continue
+                    validate(name)
+                    if not (entry.isfile() or entry.isdir()):
+                        raise Failure("UNSAFE_ARCHIVE", "TAR содержит ссылку или специальный файл")
+                    total += entry.size
+                    entries.append((entry, name))
+                    if len(entries) > 10000 or total > 64 * LIMIT:
+                        raise Failure("ARCHIVE_LIMIT", "Распаковка: до 10000 файлов / 64 MiB")
+                if len({name for _, name in entries}) != len(entries):
+                    raise Failure("UNSAFE_ARCHIVE", "Повторяющиеся пути в архиве")
+                if total / max(os.fstat(f.fileno()).st_size, 1) > 200:
+                    raise Failure("ARCHIVE_BOMB", "Слишком высокая степень сжатия")
+                for entry, name in entries:
+                    extract_parents(name, entry.isdir())
+                    if entry.isfile():
+                        with archive.extractfile(entry) as source:
+                            data = source.read(entry.size + 1)
+                        if len(data) != entry.size:
+                            raise Failure("ARCHIVE_SIZE", "Размер записи не совпадает")
+                        atomic(name, data)
+            return {}
         with os.fdopen(fd, "rb") as f, zipfile.ZipFile(f) as z:
             entries = z.infolist()
             if len(entries) > 10000 or sum(e.file_size for e in entries) > 64 * LIMIT:
@@ -371,15 +443,10 @@ def handle(b):
                     raise Failure("UNSAFE_ARCHIVE", "Архив содержит ссылки, устройства или шифрование")
                 if e.compress_size and e.file_size / e.compress_size > 200:
                     raise Failure("ARCHIVE_BOMB", "Слишком высокая степень сжатия")
+            if len({e.filename.rstrip("/") for e in entries}) != len(entries):
+                raise Failure("UNSAFE_ARCHIVE", "Повторяющиеся пути в архиве")
             for e in entries:
-                parts = e.filename.rstrip("/").split("/")
-                for i in range(1, len(parts) + (1 if e.is_dir() else 0)):
-                    directory = "/".join(parts[:i])
-                    try:
-                        handle({"action": "mkdir", "path": directory})
-                    except FileExistsError:
-                        d = opened(directory, os.O_DIRECTORY)
-                        os.close(d)
+                extract_parents(e.filename.rstrip("/"), e.is_dir())
                 if not e.is_dir():
                     data = z.read(e)
                     if len(data) != e.file_size:
@@ -387,6 +454,17 @@ def handle(b):
                     atomic(e.filename, data)
         return {}
     raise Failure("INVALID_ACTION", "Неизвестное файловое действие")
+
+
+def extract_parents(name, directory):
+    parts = name.split("/")
+    for i in range(1, len(parts) + (1 if directory else 0)):
+        path = "/".join(parts[:i])
+        try:
+            handle({"action": "mkdir", "path": path})
+        except FileExistsError:
+            fd = opened(path, os.O_DIRECTORY)
+            os.close(fd)
 
 
 def main():
@@ -410,7 +488,7 @@ def main():
     except OSError as e:
         code = "DISK_QUOTA" if e.errno in (errno.EDQUOT, errno.ENOSPC) else "FILE_EXISTS" if e.errno == errno.EEXIST else "NOT_FOUND" if e.errno == errno.ENOENT else "FILE_ERROR"
         print(json.dumps({"ok": False, "code": code, "message": os.strerror(e.errno), "status": 409 if code == "FILE_EXISTS" else 400}))
-    except (ValueError, KeyError, zipfile.BadZipFile):
+    except (ValueError, KeyError, zipfile.BadZipFile, tarfile.TarError):
         print(json.dumps({"ok": False, "code": "INVALID_REQUEST", "message": "Неверная файловая операция"}))
     finally:
         os.close(root_fd)

@@ -9,6 +9,7 @@ type Member = {
   email: string;
   role: string;
   disabled: boolean;
+  admin: boolean;
 };
 type Invitation = {
   id: string;
@@ -108,6 +109,41 @@ export default function Members() {
         )}
       </div>
       <ErrorBox error={error || data.error || apps.error} />
+      {!!me.data?.admin && selected && (
+        <button
+          onClick={async () => {
+            const workspace = me.data.workspaces.find((w) => w.id === selected);
+            if (!workspace) return;
+            const name = window.prompt("Имя рабочей области", workspace.name);
+            if (name === null) return;
+            const cpu = window.prompt("Квота vCPU", String(workspace.cpu));
+            if (cpu === null) return;
+            const ram = window.prompt(
+              "Квота RAM MiB",
+              String(workspace.memory_mib),
+            );
+            if (ram === null) return;
+            const disk = window.prompt(
+              "Квота диска MiB",
+              String(workspace.disk_mib),
+            );
+            if (disk === null) return;
+            try {
+              await api(`/workspaces/${selected}`, "PATCH", {
+                name,
+                cpu: Number(cpu),
+                memory_mib: Number(ram),
+                disk_mib: Number(disk),
+              });
+              await me.refetch();
+            } catch (error) {
+              setError(error);
+            }
+          }}
+        >
+          Изменить квоты рабочей области
+        </button>
+      )}
       {owner ? (
         <>
           <div className="panel">
@@ -157,7 +193,10 @@ export default function Members() {
                         {m.name}
                         <small>{m.email}</small>
                       </td>
-                      <td>{m.role}</td>
+                      <td>
+                        {m.admin ? "Администратор · " : ""}
+                        {m.role}
+                      </td>
                       <td>
                         <button
                           disabled={m.id === me.data?.id}
@@ -192,6 +231,30 @@ export default function Members() {
                         >
                           Изменить доступ
                         </button>
+                        {!!me.data?.admin && m.id !== me.data.id && (
+                          <button
+                            onClick={async () => {
+                              if (
+                                !window.confirm(
+                                  `${m.admin ? "Снять" : "Назначить"} права администратора платформы для ${m.email}?`,
+                                )
+                              )
+                                return;
+                              try {
+                                await api(`/users/${m.id}`, "PATCH", {
+                                  admin: !m.admin,
+                                });
+                                await data.refetch();
+                              } catch (error) {
+                                setError(error);
+                              }
+                            }}
+                          >
+                            {m.admin
+                              ? "Снять права администратора"
+                              : "Назначить администратором"}
+                          </button>
+                        )}
                         {!!me.data?.admin && m.id !== me.data.id && (
                           <button
                             onClick={async () => {

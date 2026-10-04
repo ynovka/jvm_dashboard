@@ -20,5 +20,12 @@ for jdk in 8 11 17 21 25; do
   [[ $DIGEST =~ ^sha256:[a-f0-9]{64}$ ]]
   IMAGES=$(jq --arg jdk "$jdk" --arg image "eclipse-temurin@$DIGEST" '. + {($jdk):$image}' <<<"$IMAGES")
 done
-jq -n --arg tag "$TAG" --arg node "$NODE_VERSION" --arg hash "$NODE_HASH" --argjson images "$IMAGES" '{version:$tag,architecture:"amd64",protocol:1,jdk:21,node:$node,nodeSha256:$hash,images:$images}' >"$OUT/release.json"
+ASSETS=$(python3 - "$OUT" <<'PY'
+import hashlib,json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+names=['install.sh','frontend-linux-amd64.tar.gz','backend.tar.gz','agent-linux-amd64.tar.gz','deployment.tar.gz']
+print(json.dumps({name:{'sha256':hashlib.sha256((p/name).read_bytes()).hexdigest(),'bytes':(p/name).stat().st_size} for name in names}))
+PY
+)
+jq -n --arg tag "$TAG" --arg commit "${GITHUB_SHA:-$(git rev-parse HEAD)}" --arg node "$NODE_VERSION" --arg hash "$NODE_HASH" --argjson images "$IMAGES" --argjson assets "$ASSETS" '{version:$tag,commit:$commit,architecture:"amd64",protocol:1,jdk:21,node:$node,nodeSha256:$hash,images:$images,artifacts:$assets}' >"$OUT/release.json"
 (cd "$OUT"; sha256sum install.sh release.json *.tar.gz > SHA256SUMS)

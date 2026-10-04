@@ -27,15 +27,21 @@ runcmd:
 EOF
 printf 'instance-id: jvm-smoke\nlocal-hostname: jvm-smoke\n' >"$WORK/meta-data"
 cloud-localds "$WORK/seed.img" "$WORK/user-data" "$WORK/meta-data"
-ACCEL=tcg; [[ ! -e /dev/kvm ]] || ACCEL=kvm
+ACCEL=tcg
+if [[ -e /dev/kvm ]]; then sudo chmod a+rw /dev/kvm; ACCEL=kvm; fi
 qemu-system-x86_64 -accel "$ACCEL" -m 4096 -smp 2 -nographic -drive "file=$WORK/disk.qcow2,format=qcow2" -drive "file=$WORK/seed.img,format=raw" -netdev user,id=n1,hostfwd=tcp:127.0.0.1:2222-:22,hostfwd=tcp:127.0.0.1:8443-:443 -device virtio-net-pci,netdev=n1 >vm-results/console.log 2>&1 &
 VM_PID=$!
 SSH=(ssh -i "$WORK/key" -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 tester@127.0.0.1)
 SCP=(scp -i "$WORK/key" -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
-for i in {1..90}; do "${SSH[@]}" true 2>/dev/null && break; sleep 3; done
+for i in {1..90}; do
+  kill -0 "$VM_PID" 2>/dev/null || { cat vm-results/console.log; exit 1; }
+  "${SSH[@]}" true 2>/dev/null && break
+  sleep 3
+done
 "${SSH[@]}" 'cloud-init status --wait'
-"${SCP[@]}" -r "$ARTIFACTS" tests/linux/smoke.py tester@127.0.0.1:/home/tester/
+"${SCP[@]}" -r "$ARTIFACTS" tests/linux/smoke.py tests/linux/foundation.py tester@127.0.0.1:/home/tester/
 "${SSH[@]}" "sudo bash /home/tester/$(basename "$ARTIFACTS")/install.sh --artifact-dir /home/tester/$(basename "$ARTIFACTS") --version '$TAG' --domain panel.jvm.test --storage-size 1G --ssh-port 22 --tls-mode internal" | tee vm-results/install.log
+"${SSH[@]}" "sudo python3 /home/tester/foundation.py /home/tester/$(basename "$ARTIFACTS")/release.json /home/tester/$(basename "$ARTIFACTS")/smoke.jar" | tee vm-results/foundation.log
 "${SSH[@]}" "sudo python3 /home/tester/smoke.py /home/tester/$(basename "$ARTIFACTS")/smoke.jar" | tee vm-results/api.log
 # External HTTPS validates actual routing and static assets outside the VM.
 "${SCP[@]}" tester@127.0.0.1:/opt/jvm_dashboard/data/caddy/pki/authorities/local/root.crt "$WORK/root.crt"

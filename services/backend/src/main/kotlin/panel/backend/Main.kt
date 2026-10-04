@@ -31,6 +31,7 @@ import java.net.http.HttpResponse
 data class User(val id: String, val admin: Boolean, val csrf: String)
 val attemptWindows = ConcurrentHashMap<String, Pair<Long,Int>>()
 val sockets = ConcurrentHashMap<String, AtomicInteger>()
+val downloads = ConcurrentHashMap<String, AtomicInteger>()
 val passwordWorkers = Semaphore(1)
 
 fun main(args: Array<String>) {
@@ -117,6 +118,22 @@ fun ports(c: Connection, spec: Spec, appId: String) {
         c.execute("INSERT IGNORE INTO port_allocations VALUES('local',?,?,?)",p.host,p.protocol,appId)
     }
 }
+fun validateWorkspace(c: Connection,b: JsonObject) {
+    val n=c.one("SELECT * FROM nodes WHERE id='local' FOR UPDATE")!!
+    val cpu=b.str("cpu").toDoubleOrNull() ?: 0.0; val memory=b.long("memory_mib"); val disk=b.long("disk_mib")
+    requireValid(b.str("name").length in 1..80 && cpu.isFinite() && cpu>=0.1 && cpu<=n.str("cpu").toDouble() && memory in 128..n.long("memory_mib") && disk in 128..n.long("disk_mib"),"INVALID_QUOTA","Укажите положительные квоты в пределах бюджета узла")
+}
+fun saveSpecification(c: Connection,store: Store,u: User,aid: String,spec: Spec,expected: Long,requestId: String,preserveImage: Boolean=false) {
+    validate(spec)
+    c.one("SELECT id FROM nodes WHERE id='local' FOR UPDATE"); val a=app(c,u,aid,true,true)
+    requireValid(a.long("revision")==expected,"REVISION_CONFLICT","Конфигурация изменена. Обновите страницу",409)
+    requireValid(a.str("active_operation").isEmpty(),"BUSY","Дождитесь текущей операции",409)
+    val reserve=spec.copy(cpu=maxOf(spec.cpu,a.str("cpu").toDouble()),memoryMiB=maxOf(spec.memoryMiB,a.long("memory_mib").toInt()),diskMiB=maxOf(spec.diskMiB,a.long("disk_mib").toInt()))
+    budget(c,reserve,a.str("workspace_id"),aid); val pinned=if(preserveImage) spec else spec.copy(image=c.one("SELECT image FROM runtime_images WHERE jdk=?",spec.jdk)!!.str("image")); val stored=json.encodeToString(store.stored(pinned,json.decodeFromString(a.str("spec")))); val revision=a.long("revision")+1
+    ports(c,spec,aid); c.execute("UPDATE applications SET name=?,cpu=?,memory_mib=?,disk_mib=?,spec=?,revision=? WHERE id=?",spec.name,reserve.cpu,reserve.memoryMiB,reserve.diskMiB,stored,revision,aid)
+    c.execute("UPDATE storage_allocations SET disk_mib=? WHERE app_id=?",reserve.diskMiB,aid)
+    c.execute("INSERT INTO application_revisions VALUES(?,?,?,?)",aid,revision,stored,now()); store.audit(c,u.id,"APP_UPDATE",aid,requestId)
+}
 fun enqueue(c: Connection, u: User, kind: String, appId: String?, payload: JsonObject, generation: Long, key: String?): String {
     if (key!=null) {
         requireValid(key.length in 1..80,"INVALID_KEY","Неверный Idempotency-Key")
@@ -135,9 +152,9 @@ suspend fun executeAgent(store: Store, u: User, kind: String, appId: String?, pa
         val row=store.read { it.one("SELECT * FROM operations WHERE id=?",op)!! }
         if (row.str("status") in setOf("SUCCEEDED","FAILED")) {
             val result=json.parseToJsonElement(row.str("result","{}")).jsonObject
-            if (row.str("status")=="FAILED") throw Problem(result.str("code","AGENT_ERROR"),result.str("message","Ошибка узла"),result.long("status",400).toInt())
             // Transfer chunks are transient; do not retain uploaded bytes in the metadata database.
             store.tx { it.execute("DELETE FROM operations WHERE id=? AND kind IN ('FILE','LOGS','FIREWALL')",op) }
+            if (row.str("status")=="FAILED") throw Problem(result.str("code","AGENT_ERROR"),result.str("message","Ошибка узла"),result.long("status",400).toInt())
             return result
         }; delay(200)
     }
@@ -146,11 +163,22 @@ suspend fun executeAgent(store: Store, u: User, kind: String, appId: String?, pa
 fun internal(call: ApplicationCall) { requireValid(call.request.headers["Authorization"] == "Bearer ${env("AGENT_TOKEN")}","FORBIDDEN","Invalid node identity",403) }
 
 fun Application.panel(store: Store) {
+    val maintenance=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+    monitor.subscribe(ApplicationStopped) { maintenance.cancel() }
+    maintenance.launch {
+        while(isActive) {
+            try { store.tx { c ->
+                c.execute("DELETE FROM audit_events WHERE created<? LIMIT 10000",now()-90*86400000L)
+                c.execute("DELETE FROM operations WHERE kind IN ('FILE','LOGS','FIREWALL') AND created<? AND status IN ('SUCCEEDED','FAILED') LIMIT 10000",now()-3600000L)
+            } } catch(_: Exception) { this@panel.log.warn("Metadata retention cleanup failed; retrying") }
+            delay(3600000)
+        }
+    }
     install(ContentNegotiation) { json(panel.shared.json) }
     install(WebSockets) { pingPeriod=15.seconds; timeout=30.seconds; maxFrameSize=4096 }
     install(StatusPages) {
         exception<Throwable> { call,cause ->
-            val p= cause as? Problem ?: Problem("INTERNAL_ERROR","Внутренняя ошибка; проверьте журнал по requestId",500)
+            val p= cause as? Problem ?: if(cause is kotlinx.serialization.SerializationException || cause is NumberFormatException) Problem("INVALID_REQUEST","Проверьте поля запроса") else Problem("INTERNAL_ERROR","Внутренняя ошибка; проверьте журнал по requestId",500)
             if (p.status==500) this@panel.log.error("request {} failed: {}",call.requestId(),cause.javaClass.simpleName)
             call.respond(HttpStatusCode.fromValue(p.status), obj("code" to p.code,"message" to p.message,"fieldErrors" to obj(),"requestId" to call.requestId()))
         }
@@ -197,13 +225,27 @@ fun Application.panel(store: Store) {
                 val u=auth(store,call); call.respond(store.read { c -> c.one("SELECT id,email,name,admin FROM users WHERE id=?",u.id)!! + obj("csrf" to u.csrf,"workspaces" to c.rows("SELECT w.*,m.role FROM workspaces w JOIN memberships m ON m.workspace_id=w.id WHERE m.user_id=?",u.id)) })
             }
             get("/runtimes") { auth(store,call); call.respond(obj("items" to store.read { it.rows("SELECT * FROM runtime_images WHERE enabled=TRUE ORDER BY jdk") })) }
+            get("/admin/runtimes") { val u=auth(store,call); admin(u); call.respond(obj("items" to store.read { it.rows("SELECT * FROM runtime_images ORDER BY jdk") })) }
+            patch("/runtimes/{jdk}") {
+                val u=auth(store,call,true); admin(u); val b=call.body(); val jdk=call.parameters["jdk"]!!.toIntOrNull()
+                requireValid(jdk in setOf(8,11,17,21,25) && b.str("image").matches(Regex("eclipse-temurin@sha256:[a-f0-9]{64}")),"INVALID_IMAGE","Укажите проверенный digest Eclipse Temurin")
+                store.tx { c -> c.execute("UPDATE runtime_images SET image=?,enabled=? WHERE jdk=?",b.str("image"),b.bool("enabled"),jdk); store.audit(c,u.id,"RUNTIME_UPDATE",jdk.toString(),call.requestId()) }; call.respond(obj("ok" to true))
+            }
             post("/workspaces") {
                 val u=auth(store,call,true); admin(u); val b=call.body(); requireValid(b.str("name").length in 1..80,"INVALID_NAME","Укажите имя")
-                val wid=id(); store.tx { c -> c.execute("INSERT INTO workspaces VALUES(?,?,?,?,?)",wid,b.str("name"),b.str("cpu").toDouble(),b.long("memory_mib"),b.long("disk_mib")); c.execute("INSERT INTO memberships VALUES(?,?,'OWNER')",wid,u.id); store.audit(c,u.id,"WORKSPACE_CREATE",wid,call.requestId()) }; call.respond(HttpStatusCode.Created,obj("id" to wid))
+                val wid=id(); store.tx { c -> validateWorkspace(c,b); c.execute("INSERT INTO workspaces VALUES(?,?,?,?,?)",wid,b.str("name"),b.str("cpu").toDouble(),b.long("memory_mib"),b.long("disk_mib")); c.execute("INSERT INTO memberships VALUES(?,?,'OWNER')",wid,u.id); store.audit(c,u.id,"WORKSPACE_CREATE",wid,call.requestId()) }; call.respond(HttpStatusCode.Created,obj("id" to wid))
+            }
+            patch("/workspaces/{ws}") {
+                val u=auth(store,call,true); admin(u); val b=call.body(); val ws=call.parameters["ws"]!!
+                store.tx { c -> validateWorkspace(c,b); c.one("SELECT id FROM workspaces WHERE id=? FOR UPDATE",ws) ?: throw Problem("NOT_FOUND","Рабочая область не найдена",404)
+                    val used=c.one("SELECT COALESCE(SUM(cpu),0) cpu,COALESCE(SUM(memory_mib),0) memory_mib,(SELECT COALESCE(SUM(disk_mib),0) FROM storage_allocations WHERE workspace_id=?) disk_mib FROM applications WHERE workspace_id=? AND deleted=FALSE",ws,ws)!!
+                    requireValid(b.str("cpu").toDouble()>=used.str("cpu").toDouble() && b.long("memory_mib")>=used.long("memory_mib") && b.long("disk_mib")>=used.long("disk_mib"),"QUOTA_IN_USE","Квота меньше текущих резервов",409)
+                    c.execute("UPDATE workspaces SET name=?,cpu=?,memory_mib=?,disk_mib=? WHERE id=?",b.str("name"),b.str("cpu").toDouble(),b.long("memory_mib"),b.long("disk_mib"),ws); store.audit(c,u.id,"WORKSPACE_UPDATE",ws,call.requestId())
+                }; call.respond(obj("ok" to true))
             }
             get("/workspaces/{ws}/members") {
                 val u=auth(store,call); val ws=call.parameters["ws"]!!
-                call.respond(store.read { c -> requireValid(role(c,u,ws)=="OWNER","FORBIDDEN","Недостаточно прав",403); obj("items" to c.rows("SELECT u.id,u.email,u.name,u.disabled,m.role FROM users u JOIN memberships m ON u.id=m.user_id WHERE m.workspace_id=?",ws),"invitations" to c.rows("SELECT id,role,email,expires,used,revoked FROM invitations WHERE workspace_id=? ORDER BY expires DESC LIMIT 100",ws)) })
+                call.respond(store.read { c -> requireValid(role(c,u,ws)=="OWNER","FORBIDDEN","Недостаточно прав",403); obj("items" to c.rows("SELECT u.id,u.email,u.name,u.admin,u.disabled,m.role FROM users u JOIN memberships m ON u.id=m.user_id WHERE m.workspace_id=?",ws),"invitations" to c.rows("SELECT id,role,email,expires,used,revoked FROM invitations WHERE workspace_id=? ORDER BY expires DESC LIMIT 100",ws)) })
             }
             post("/workspaces/{ws}/invitations") {
                 val u=auth(store,call,true); val ws=call.parameters["ws"]!!; val b=call.body(); val t=token(); val iid=id()
@@ -240,15 +282,16 @@ fun Application.panel(store: Store) {
                 })
             }
             post("/applications") {
-                val u=auth(store,call,true); val b=call.body(); val spec=json.decodeFromJsonElement<Spec>(b["spec"]!!); validate(spec); val wid=b.str("workspaceId"); var aid=id()
+                val u=auth(store,call,true); val b=call.body(); val spec=json.decodeFromJsonElement<Spec>(b["spec"] ?: throw Problem("INVALID_SPEC","Укажите спецификацию")); validate(spec); val wid=b.str("workspaceId"); var aid=id()
                 val op=store.tx { c ->
-                    requireValid(role(c,u,wid)=="OWNER","FORBIDDEN","Недостаточно прав",403); budget(c,spec,wid)
+                    requireValid(role(c,u,wid)=="OWNER","FORBIDDEN","Недостаточно прав",403)
                     val key=call.request.headers["Idempotency-Key"]
                     key?.let { c.one("SELECT * FROM operations WHERE user_id=? AND idempotency_key=?",u.id,it) }?.let { previous ->
                         val existing=c.one("SELECT * FROM applications WHERE id=?",previous.str("app_id"))
                         requireValid(previous.str("kind")=="CREATE" && existing!=null && existing.str("workspace_id")==wid && store.plain(json.decodeFromString<Spec>(existing.str("spec"))).copy(image="")==spec.copy(image=""),"IDEMPOTENCY_CONFLICT","Ключ использован для другого приложения",409)
                         aid=previous.str("app_id"); return@tx previous.str("id")
                     }
+                    budget(c,spec,wid)
                     val pinned=spec.copy(image=c.one("SELECT image FROM runtime_images WHERE jdk=?",spec.jdk)!!.str("image"))
                     val stored=json.encodeToString(store.stored(pinned))
                     c.execute("INSERT INTO applications(id,workspace_id,node_id,name,cpu,memory_mib,disk_mib,spec) VALUES(?,?,'local',?,?,?,?,?)",aid,wid,spec.name,spec.cpu,spec.memoryMiB,spec.diskMiB,stored)
@@ -260,19 +303,30 @@ fun Application.panel(store: Store) {
             }
             get("/applications/{app}") { val u=auth(store,call); call.respond(store.read { sanitized(store,app(it,u,call.parameters["app"]!!)) }) }
             patch("/applications/{app}") {
-                val u=auth(store,call,true); val aid=call.parameters["app"]!!; val b=call.body(); val spec=json.decodeFromJsonElement<Spec>(b["spec"]!!); validate(spec)
+                val u=auth(store,call,true); val aid=call.parameters["app"]!!; val b=call.body(); val spec=json.decodeFromJsonElement<Spec>(b["spec"] ?: throw Problem("INVALID_SPEC","Укажите спецификацию")); validate(spec)
                 store.tx { c ->
-                    c.one("SELECT id FROM nodes WHERE id='local' FOR UPDATE"); val a=app(c,u,aid,true,true)
-                    requireValid(a.long("revision")==b.long("revision"),"REVISION_CONFLICT","Конфигурация изменена. Обновите страницу",409)
-                    requireValid(a.str("active_operation").isEmpty(),"BUSY","Дождитесь текущей операции",409)
-                    val reserve=spec.copy(cpu=maxOf(spec.cpu,a.str("cpu").toDouble()),memoryMiB=maxOf(spec.memoryMiB,a.long("memory_mib").toInt()),diskMiB=maxOf(spec.diskMiB,a.long("disk_mib").toInt()))
-                    budget(c,reserve,a.str("workspace_id"),aid); val pinned=spec.copy(image=c.one("SELECT image FROM runtime_images WHERE jdk=?",spec.jdk)!!.str("image")); val stored=json.encodeToString(store.stored(pinned,json.decodeFromString(a.str("spec")))); val revision=a.long("revision")+1
-                    ports(c,spec,aid); c.execute("UPDATE applications SET name=?,cpu=?,memory_mib=?,disk_mib=?,spec=?,revision=? WHERE id=?",spec.name,reserve.cpu,reserve.memoryMiB,reserve.diskMiB,stored,revision,aid)
-                    c.execute("UPDATE storage_allocations SET disk_mib=? WHERE app_id=?",reserve.diskMiB,aid)
-                    c.execute("INSERT INTO application_revisions VALUES(?,?,?,?)",aid,revision,stored,now()); store.audit(c,u.id,"APP_UPDATE",aid,call.requestId())
+                    saveSpecification(c,store,u,aid,spec,b.long("revision"),call.requestId())
                 }; call.respond(obj("ok" to true,"requiresRestart" to true))
             }
             get("/applications/{app}/revisions") { val u=auth(store,call); val aid=call.parameters["app"]!!; call.respond(store.read { c -> app(c,u,aid,false,true); obj("items" to c.rows("SELECT * FROM application_revisions WHERE app_id=? ORDER BY revision DESC LIMIT 50",aid).map { sanitized(store,it) }) }) }
+            post("/applications/{app}/revisions/{revision}/restore") {
+                val u=auth(store,call,true); val aid=call.parameters["app"]!!; val b=call.body()
+                store.tx { c ->
+                    app(c,u,aid,true,true)
+                    val saved=c.one("SELECT spec FROM application_revisions WHERE app_id=? AND revision=?",aid,call.parameters["revision"]!!.toLongOrNull()) ?: throw Problem("NOT_FOUND","Ревизия не найдена",404)
+                    val spec=store.plain(json.decodeFromString<Spec>(saved.str("spec")))
+                    saveSpecification(c,store,u,aid,spec,b.long("currentRevision"),call.requestId(),true)
+                    store.audit(c,u.id,"REVISION_RESTORE",aid,call.requestId())
+                }; call.respond(obj("ok" to true,"requiresRestart" to true))
+            }
+            post("/applications/{app}/environment/reveal") {
+                val u=auth(store,call,true); val aid=call.parameters["app"]!!; val b=call.body()
+                val value=store.tx { c ->
+                    val a=app(c,u,aid,false,true); val spec=store.plain(json.decodeFromString<Spec>(a.str("spec")))
+                    val entry=spec.env.firstOrNull { it.key==b.str("key") } ?: throw Problem("NOT_FOUND","Переменная не найдена",404)
+                    store.audit(c,u.id,"ENV_REVEAL",aid,call.requestId()); entry.value
+                }; call.respond(obj("value" to value))
+            }
             post("/applications/{app}/actions/{action}") {
                 val u=auth(store,call,true); val aid=call.parameters["app"]!!; val action=call.parameters["action"]!!.uppercase(); requireValid(action in setOf("START","STOP","RESTART","APPLY"),"INVALID_ACTION","Неизвестное действие")
                 val operation=store.tx { c ->
@@ -310,6 +364,44 @@ fun Application.panel(store: Store) {
                 }; call.respond(obj("start" to start,"end" to end,"step" to step,"series" to JsonObject(points)))
             }
             get("/applications/{app}/logs") { val u=auth(store,call); val aid=call.parameters["app"]!!; store.read { app(it,u,aid) }; call.respond(executeAgent(store,u,"LOGS",aid,obj())) }
+            get("/applications/{app}/files/download") {
+                val downloadCall=call; val u=auth(store,call); val aid=call.parameters["app"]!!
+                store.read { app(it,u,aid) }
+                val path=call.request.queryParameters["path"] ?: throw Problem("INVALID_PATH","Укажите путь")
+                val count=downloads.computeIfAbsent(u.id) { AtomicInteger() }
+                if(count.incrementAndGet()>2) { count.decrementAndGet(); throw Problem("TRANSFER_LIMIT","Не более двух скачиваний одновременно",429) }
+                val released=java.util.concurrent.atomic.AtomicBoolean(false)
+                fun release() { if(released.compareAndSet(false,true)) count.decrementAndGet() }
+                try {
+                    val meta=executeAgent(store,u,"FILE",aid,obj("action" to "read","path" to path,"metadataOnly" to true))
+                    val size=meta.long("size"); val etag=meta.str("etag"); val range=call.request.headers[HttpHeaders.Range]?.takeIf { call.request.headers[HttpHeaders.IfRange]==null || call.request.headers[HttpHeaders.IfRange]=="\"$etag\"" }
+                    var start=0L; var end=size-1
+                    if(range!=null) {
+                        val match=Regex("bytes=(\\d*)-(\\d*)").matchEntire(range)
+                        requireValid(match!=null && size>0,"INVALID_RANGE","Недопустимый диапазон",416)
+                        val first=match!!.groupValues[1]; val last=match.groupValues[2]
+                        if(first.isEmpty()) { val suffix=last.toLongOrNull() ?: 0; requireValid(suffix>0,"INVALID_RANGE","Недопустимый диапазон",416); start=maxOf(0,size-suffix) }
+                        else { start=first.toLongOrNull() ?: size; if(last.isNotEmpty()) end=minOf(size-1,last.toLongOrNull() ?: -1) }
+                        requireValid(start in 0 until size && end>=start,"INVALID_RANGE","Недопустимый диапазон",416)
+                    }
+                    call.response.header(HttpHeaders.AcceptRanges,"bytes"); call.response.header(HttpHeaders.ETag,"\"$etag\"")
+                    call.response.header(HttpHeaders.ContentDisposition,"attachment; filename*=UTF-8''"+URLEncoder.encode(path.substringAfterLast('/'),Charsets.UTF_8).replace("+","%20"))
+                    if(range!=null) call.response.header(HttpHeaders.ContentRange,"bytes $start-$end/$size")
+                    call.respondOutputStream(ContentType.Application.OctetStream,if(range==null) HttpStatusCode.OK else HttpStatusCode.PartialContent,contentLength=maxOf(0,end-start+1)) {
+                        try {
+                            var offset=start
+                            while(offset<=end) {
+                                val current=auth(store,downloadCall); store.read { app(it,current,aid) }
+                                val chunk=executeAgent(store,current,"FILE",aid,obj("action" to "download","path" to path,"offset" to offset,"etag" to etag))
+                                val data=java.util.Base64.getDecoder().decode(chunk.str("data"))
+                                requireValid(data.isNotEmpty(),"FILE_CHANGED","Файл изменён при скачивании",409)
+                                val length=minOf(data.size.toLong(),end-offset+1).toInt()
+                                withContext(Dispatchers.IO) { write(data,0,length); flush() }; offset+=length
+                            }
+                        } finally { release() }
+                    }
+                } catch(e: Throwable) { release(); throw e }
+            }
             post("/applications/{app}/files") {
                 val b=call.body(); val write=b.str("action") !in setOf("list","read","download","trashList","uploadStatus")
                 val u=auth(store,call,true); val aid=call.parameters["app"]!!; val a=store.read { app(it,u,aid,write) }
@@ -322,7 +414,11 @@ fun Application.panel(store: Store) {
             get("/audit") { val u=auth(store,call); admin(u); call.respond(obj("items" to store.read { it.rows("SELECT * FROM audit_events ORDER BY created DESC LIMIT 200") })) }
             patch("/users/{user}") {
                 val u=auth(store,call,true); admin(u); val b=call.body(); val uid=call.parameters["user"]!!
-                store.tx { c -> c.one("SELECT id FROM bootstrap_state WHERE id=1 FOR UPDATE"); val target=c.one("SELECT * FROM users WHERE id=?",uid) ?: throw Problem("NOT_FOUND","Аккаунт не найден",404); requireValid(!target.bool("admin") || !b.bool("disabled") || c.one("SELECT COUNT(*) n FROM users WHERE admin=TRUE AND disabled=FALSE AND id<>?",uid)!!.long("n")>0,"LAST_ADMIN","Нельзя отключить последнего администратора",409); c.execute("UPDATE users SET disabled=? WHERE id=?",b.bool("disabled"),uid); c.execute("DELETE FROM sessions WHERE user_id=?",uid); store.audit(c,u.id,"USER_DISABLE",uid,call.requestId()) }; call.respond(obj("ok" to true))
+                store.tx { c -> c.one("SELECT id FROM bootstrap_state WHERE id=1 FOR UPDATE"); val target=c.one("SELECT * FROM users WHERE id=?",uid) ?: throw Problem("NOT_FOUND","Аккаунт не найден",404)
+                    val nextAdmin=b["admin"]?.jsonPrimitive?.booleanOrNull ?: target.bool("admin"); val disabled=b["disabled"]?.jsonPrimitive?.booleanOrNull ?: target.bool("disabled")
+                    requireValid(!target.bool("admin") || (!disabled && nextAdmin) || c.one("SELECT COUNT(*) n FROM users WHERE admin=TRUE AND disabled=FALSE AND id<>?",uid)!!.long("n")>0,"LAST_ADMIN","Нельзя отключить последнего администратора",409)
+                    c.execute("UPDATE users SET disabled=?,admin=? WHERE id=?",disabled,nextAdmin,uid); c.execute("DELETE FROM sessions WHERE user_id=?",uid); store.audit(c,u.id,"USER_UPDATE",uid,call.requestId())
+                }; call.respond(obj("ok" to true))
             }
         }
         post("/internal/v1/heartbeat") {
@@ -371,7 +467,8 @@ fun Application.panel(store: Store) {
         }
         webSocket("/ws/applications/{app}") {
             origin(call); val u=auth(store,call); val aid=call.parameters["app"]!!; store.read { app(it,u,aid) }
-            val count=sockets.computeIfAbsent(u.id) { AtomicInteger() }; requireValid(count.incrementAndGet()<=5,"STREAM_LIMIT","Не более пяти потоков",429)
+            val count=sockets.computeIfAbsent(u.id) { AtomicInteger() }
+            if(count.incrementAndGet()>5) { count.decrementAndGet(); throw Problem("STREAM_LIMIT","Не более пяти потоков",429) }
             try { var sequence=0L; while(true) { val current=auth(store,call); send(Frame.Text((snapshot(store,current,aid)+obj("eventId" to ++sequence,"type" to "snapshot")).toString())); delay(2000) } } finally { count.decrementAndGet() }
         }
     }

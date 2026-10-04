@@ -10,6 +10,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -22,6 +23,9 @@ jobs:
           java-version: "21"
       - run: chmod +x gradlew
       - run: npm ci && npm run lint && npm run build
+      - run: google-chrome --version && npm run test:e2e
+        env:
+          PLAYWRIGHT_CHANNEL: chrome
       - run: ./gradlew test installDist --no-daemon
       - run: python3 -m unittest discover -s tests/helpers -v
       - run: bash scripts/package-release.sh "$RELEASE_TAG"
@@ -58,7 +62,8 @@ jobs:
         with:
           name: release
           path: artifacts
-      - run: gh release create "$RELEASE_TAG" artifacts/install.sh artifacts/release.json artifacts/SHA256SUMS artifacts/*.tar.gz --repo "$GITHUB_REPOSITORY" --title "JVM Dashboard $RELEASE_TAG" --notes "Ubuntu 24.04 MVP. Installation and reboot smoke tests passed. See docs/MVP.md for deployment and validation scope."
+      - run: gh release create "$RELEASE_TAG" artifacts/install.sh artifacts/release.json artifacts/SHA256SUMS artifacts/*.tar.gz --repo "$GITHUB_REPOSITORY" --target "$RELEASE_COMMIT" --title "JVM Dashboard $RELEASE_TAG" --notes "Ubuntu 24.04 MVP. Installation and reboot smoke tests passed. See docs/MVP.md for deployment and validation scope."
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ github.sha }}
           RELEASE_TAG: ${{ inputs.tag }}

@@ -119,11 +119,18 @@ class Agent {
     private fun stop(aid: String, runtime: Runtime) { if(inspect(aid)!=null) docker("stop","--time",runtime.spec.stopSeconds.toString(),container(aid),timeout=runtime.spec.stopSeconds+10L) }
     private fun file(aid: String, payload: JsonObject): JsonObject {
         val runtime=journal.apps[aid] ?: throw Problem("NOT_FOUND","Volume не найден",404)
+        val action=payload.str("action")
+        if(action in setOf("write","uploadFinish","trash","rename","move","copy","archive","extract","restore")) {
+            val path=if(action=="uploadFinish") file(aid,obj("action" to "uploadStatus","id" to payload.str("id"))).str("path") else payload.str("path")
+            val jar=runtime.spec.jar
+            val touchesJar=path==jar || (path.isNotEmpty() && jar.startsWith("$path/")) || payload.str("target")==jar || action in setOf("extract","restore")
+            requireValid(!touchesJar || inspect(aid)?.get("State")?.jsonObject?.bool("Running")!=true,"JAR_RUNNING","Остановите приложение перед заменой JAR",409)
+        }
         val uid=(2000000+runtime.project).toString()
         // Separate UID, no network namespace, no Docker socket, and only this volume writable.
-        val command=listOf("bwrap","--unshare-pid","--unshare-net","--unshare-uts","--unshare-ipc","--unshare-cgroup","--die-with-parent","--new-session","--cap-drop","ALL","--uid",uid,"--gid",uid,
+        val command=listOf("bwrap","--unshare-pid","--unshare-net","--unshare-uts","--unshare-ipc","--unshare-cgroup","--die-with-parent","--new-session","--cap-drop","ALL","--cap-add","CAP_SETUID","--cap-add","CAP_SETGID","--cap-add","CAP_SETPCAP",
             "--ro-bind","/usr","/usr","--ro-bind","/lib","/lib","--ro-bind","/lib64","/lib64","--proc","/proc","--dev","/dev",
-            "--bind",directory(aid).toString(),"/data","--ro-bind","$helpers/files.py","/worker.py","--chdir","/data","python3","/worker.py")
+            "--bind",directory(aid).toString(),"/data","--ro-bind","$helpers/files.py","/worker.py","--chdir","/","setpriv","--reuid",uid,"--regid",uid,"--clear-groups","--bounding-set=-all","--inh-caps=-all","--ambient-caps=-all","--no-new-privs","python3","/worker.py")
         val result=json.parseToJsonElement(run(command,payload.toString(),60)).jsonObject
         if(!result.bool("ok",true)) throw Problem(result.str("code","FILE_ERROR"),result.str("message","Файловая операция не выполнена"),result.long("status",400).toInt())
         return result
@@ -251,7 +258,7 @@ operator fun JsonObject.plus(other: JsonObject)=JsonObject(toMap()+other.toMap()
 fun main() = runBlocking {
     val agent=Agent(); agent.preflight()
     val engine=embeddedServer(Netty,host="127.0.0.1",port=env("AGENT_METRICS_PORT","8302").toInt()) {
-        routing { get("/metrics") { call.respondText(agent.metrics()) }; get("/ready") { call.respondText(if(agent.ready) "ready" else "unavailable") } }
+        routing { get("/metrics") { call.respondText(agent.metrics()) }; get("/ready") { call.respondText(if(agent.ready) "ready" else "unavailable",status=if(agent.ready) io.ktor.http.HttpStatusCode.OK else io.ktor.http.HttpStatusCode.ServiceUnavailable) } }
     }.start()
     launch(Dispatchers.IO) { while(isActive) { try { agent.observe() } catch(_: Exception) { System.err.println("Agent observation failed; retrying") }; delay(2000) } }
     launch(Dispatchers.IO) {

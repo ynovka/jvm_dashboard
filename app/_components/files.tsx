@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import dynamic from "next/dynamic";
 import { api, size } from "./api";
 import { ErrorBox } from "./shell";
+import { json as jsonLanguage } from "@codemirror/lang-json";
 
 const CodeMirror = dynamic(() => import("@uiw/react-codemirror"), {
   ssr: false,
@@ -22,6 +23,49 @@ type Upload = {
   offset: number;
   paused: boolean;
 };
+function FileTree({
+  appId,
+  path,
+  onOpen,
+  depth = 0,
+}: {
+  appId: string;
+  path: string;
+  onOpen: (path: string) => void;
+  depth?: number;
+}) {
+  const [expanded, setExpanded] = useState(depth === 0);
+  const entries = useQuery<{ items: Entry[] }>({
+    queryKey: ["files", appId, path],
+    queryFn: () =>
+      api(`/applications/${appId}/files`, "POST", { action: "list", path }),
+    enabled: expanded,
+  });
+  return (
+    <div style={{ paddingLeft: depth ? 16 : 0 }}>
+      <button className="text-button" onClick={() => setExpanded(!expanded)}>
+        {expanded ? "▾" : "▸"}
+      </button>
+      <button className="text-button" onClick={() => onOpen(path)}>
+        {path ? path.split("/").pop() : "Файлы приложения"}
+      </button>
+      {expanded &&
+        depth < 32 &&
+        entries.data?.items
+          .filter((entry) => entry.type === "directory")
+          .slice(0, 100)
+          .map((entry) => (
+            <FileTree
+              key={entry.name}
+              appId={appId}
+              path={path ? `${path}/${entry.name}` : entry.name}
+              onOpen={onOpen}
+              depth={depth + 1}
+            />
+          ))}
+    </div>
+  );
+}
 export default function Files({
   appId,
   writable,
@@ -31,6 +75,8 @@ export default function Files({
 }) {
   const [path, setPath] = useState("");
   const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [sort, setSort] = useState("name");
   const [error, setError] = useState<unknown>();
   const [editor, setEditor] = useState<{
     path: string;
@@ -45,6 +91,10 @@ export default function Files({
   const pause = useRef(false);
   const client = useQueryClient();
   const endpoint = `/applications/${appId}/files`;
+  function navigate(next: string) {
+    setPath(next);
+    setSelected([]);
+  }
   function file<T>(body: unknown) {
     return api<T>(endpoint, "POST", body);
   }
@@ -88,40 +138,16 @@ export default function Files({
   async function download(name: string) {
     setBusy(true);
     setError(undefined);
-    const parts: Uint8Array<ArrayBuffer>[] = [];
-    let offset = 0;
-    let etag: string | undefined;
     try {
-      while (true) {
-        const chunk = await file<{
-          data: string;
-          offset: number;
-          size: number;
-          etag: string;
-        }>({ action: "download", path: full(name), offset, etag });
-        if (chunk.size > 256 * 1024 ** 2)
-          throw new Error(
-            "Скачивание в браузере ограничено 256 MiB. Большие файлы сохраните через серверную процедуру.",
-          );
-        parts.push(Uint8Array.from(atob(chunk.data), (c) => c.charCodeAt(0)));
-        offset = chunk.offset;
-        etag = chunk.etag;
-        setProgress(
-          `Скачивание ${name}: ${size(offset)} / ${size(chunk.size)}`,
-        );
-        if (offset >= chunk.size) break;
-      }
-      const url = URL.createObjectURL(new Blob(parts));
+      await file({ action: "read", path: full(name), metadataOnly: true });
       const a = document.createElement("a");
-      a.href = url;
+      a.href = `/api/v1${endpoint}/download?path=${encodeURIComponent(full(name))}`;
       a.download = name;
       a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (e) {
       setError(e);
     } finally {
       setBusy(false);
-      setProgress("");
     }
   }
   async function continueUpload() {
@@ -160,6 +186,7 @@ export default function Files({
         await file({ action: "uploadFinish", id: u.id, path: u.path });
         transfer.current = null;
         setHasTransfer(false);
+        localStorage.removeItem(`jvm-upload-${appId}`);
         setProgress("Загрузка завершена");
         await client.invalidateQueries({ queryKey: ["files", appId] });
       }
@@ -177,6 +204,34 @@ export default function Files({
         return;
       }
       const target = full(f.name);
+      try {
+        const saved = JSON.parse(
+          localStorage.getItem(`jvm-upload-${appId}`) || "null",
+        );
+        if (
+          saved &&
+          saved.path === target &&
+          saved.size === f.size &&
+          saved.lastModified === f.lastModified &&
+          window.confirm(`Продолжить прерванную загрузку ${f.name}?`)
+        ) {
+          await file({ action: "uploadStatus", id: saved.id });
+          transfer.current = {
+            id: saved.id,
+            file: f,
+            path: target,
+            offset: 0,
+            paused: false,
+          };
+          setHasTransfer(true);
+          await continueUpload();
+          if (transfer.current) break;
+          continue;
+        }
+      } catch (e) {
+        setError(e);
+        localStorage.removeItem(`jvm-upload-${appId}`);
+      }
       let etag;
       if (listing.data?.items.some((e) => e.name === f.name)) {
         if (!window.confirm(`Заменить ${f.name}?`)) continue;
@@ -208,6 +263,15 @@ export default function Files({
           paused: false,
         };
         setHasTransfer(true);
+        localStorage.setItem(
+          `jvm-upload-${appId}`,
+          JSON.stringify({
+            id: session.id,
+            path: target,
+            size: f.size,
+            lastModified: f.lastModified,
+          }),
+        );
         await continueUpload();
         if (transfer.current) break;
       } catch (e) {
@@ -225,8 +289,12 @@ export default function Files({
         if (writable && !busy) void upload(e.dataTransfer.files);
       }}
     >
+      <details className="file-tree">
+        <summary>Дерево каталогов</summary>
+        <FileTree appId={appId} path="" onOpen={navigate} />
+      </details>
       <div className="toolbar">
-        <button onClick={() => setPath("")}>⌂</button>
+        <button onClick={() => navigate("")}>⌂</button>
         {path
           .split("/")
           .filter(Boolean)
@@ -234,7 +302,7 @@ export default function Files({
             <button
               key={i}
               onClick={() =>
-                setPath(
+                navigate(
                   path
                     .split("/")
                     .slice(0, i + 1)
@@ -247,7 +315,7 @@ export default function Files({
           ))}
         {path && (
           <button
-            onClick={() => setPath(path.split("/").slice(0, -1).join("/"))}
+            onClick={() => navigate(path.split("/").slice(0, -1).join("/"))}
           >
             ↑
           </button>
@@ -259,6 +327,15 @@ export default function Files({
           placeholder="Поиск в каталоге…"
         />
         <button onClick={() => listing.refetch()}>↻</button>
+        <select
+          aria-label="Сортировка файлов"
+          value={sort}
+          onChange={(e) => setSort(e.target.value)}
+        >
+          <option value="name">Имя</option>
+          <option value="size">Размер</option>
+          <option value="modified">Изменён</option>
+        </select>
       </div>
       <div className="toolbar">
         {writable && (
@@ -310,6 +387,50 @@ export default function Files({
         </span>
       </div>
       <ErrorBox error={error || listing.error || removed.error} />
+      {!!selected.length && (
+        <div className="toolbar">
+          <span>Выбрано: {selected.length}</span>
+          {writable && (
+            <>
+              <button
+                disabled={busy}
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      `Переместить ${selected.length} объектов в корзину?`,
+                    )
+                  )
+                    return;
+                  for (const name of selected)
+                    await perform({ action: "trash", path: full(name) });
+                  setSelected([]);
+                }}
+              >
+                В корзину
+              </button>
+              <button
+                disabled={busy}
+                onClick={async () => {
+                  const name = window.prompt("Имя ZIP-архива", "selection.zip");
+                  if (!name) return;
+                  await perform({
+                    action: "archive",
+                    path,
+                    paths: selected.map(full),
+                    target: full(name),
+                  });
+                }}
+              >
+                Архив выбранного
+              </button>
+            </>
+          )}
+          <button onClick={() => setSelected([])}>Снять выделение</button>
+        </div>
+      )}
+      <p className="muted">
+        Для продолжения загрузки после обновления страницы выберите тот же файл.
+      </p>
       {progress && (
         <div className="notice" role="status">
           {progress}
@@ -333,6 +454,7 @@ export default function Files({
                   });
                   transfer.current = null;
                   setHasTransfer(false);
+                  localStorage.removeItem(`jvm-upload-${appId}`);
                   setProgress("");
                 }}
               >
@@ -360,6 +482,7 @@ export default function Files({
         <table>
           <thead>
             <tr>
+              <th>Выбор</th>
               <th>Имя</th>
               <th>Размер</th>
               <th>Изменён</th>
@@ -371,15 +494,37 @@ export default function Files({
               .filter((e) =>
                 e.name.toLowerCase().includes(search.toLowerCase()),
               )
+              .sort((a, b) =>
+                sort === "size"
+                  ? b.size - a.size
+                  : sort === "modified"
+                    ? b.modified - a.modified
+                    : a.name.localeCompare(b.name),
+              )
               .map((e) => (
                 <tr key={e.name}>
+                  <td>
+                    <input
+                      aria-label={`Выбрать ${e.name}`}
+                      type="checkbox"
+                      disabled={e.type === "unsupported"}
+                      checked={selected.includes(e.name)}
+                      onChange={(event) =>
+                        setSelected(
+                          event.target.checked
+                            ? [...selected, e.name]
+                            : selected.filter((name) => name !== e.name),
+                        )
+                      }
+                    />
+                  </td>
                   <td>
                     <button
                       className="text-button"
                       disabled={e.type === "unsupported"}
                       onClick={() =>
                         e.type === "directory"
-                          ? setPath(full(e.name))
+                          ? navigate(full(e.name))
                           : edit(e.name)
                       }
                     >
@@ -416,7 +561,7 @@ export default function Files({
                           >
                             Переименовать
                           </button>
-                          {e.type === "file" && (
+                          {(e.type === "file" || e.type === "directory") && (
                             <button
                               onClick={() => {
                                 const target = window.prompt(
@@ -434,12 +579,12 @@ export default function Files({
                               Копия
                             </button>
                           )}
-                          {e.name.endsWith(".zip") && (
+                          {/\.(zip|tar|tar\.gz|tgz)$/i.test(e.name) && (
                             <button
                               onClick={() => {
                                 if (
                                   window.confirm(
-                                    "Распаковать ZIP в корень приложения? Существующие файлы не заменяются.",
+                                    "Распаковать архив в корень приложения? Существующие файлы не заменяются.",
                                   )
                                 )
                                   void perform({
@@ -501,6 +646,7 @@ export default function Files({
               value={editor.text}
               height="440px"
               theme="dark"
+              extensions={editor.path.endsWith(".json") ? [jsonLanguage()] : []}
               readOnly={!writable}
               onChange={(text) => setEditor({ ...editor, text })}
             />

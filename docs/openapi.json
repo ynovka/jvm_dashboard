@@ -1236,6 +1236,366 @@
           }
         }
       }
+    },
+    "/admin/runtimes": {
+      "get": {
+        "operationId": "get_admin_runtimes",
+        "summary": "Каталог JDK администратора",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error (400/401/403/404/409/413/429/503/504)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/runtimes/{jdk}": {
+      "patch": {
+        "operationId": "patch_runtimes_jdk",
+        "summary": "Изменить digest и доступность JDK",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "jdk",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error (400/401/403/404/409/413/429/503/504)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "image",
+                  "enabled"
+                ],
+                "properties": {
+                  "image": {
+                    "type": "string",
+                    "pattern": "^eclipse-temurin@sha256:[a-f0-9]{64}$"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workspaces/{ws}": {
+      "patch": {
+        "operationId": "patch_workspaces_ws",
+        "summary": "Изменить квоты рабочей области",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ws",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error (400/401/403/404/409/413/429/503/504)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceCreate"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/applications/{app}/revisions/{revision}/restore": {
+      "post": {
+        "operationId": "post_applications_app_revisions_revision_restore",
+        "summary": "Восстановить ревизию без изменения файлов",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "revision",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error (400/401/403/404/409/413/429/503/504)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "currentRevision"
+                ],
+                "properties": {
+                  "currentRevision": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/applications/{app}/environment/reveal": {
+      "post": {
+        "operationId": "post_applications_app_environment_reveal",
+        "summary": "Показать ENV владельцу с аудитом",
+        "parameters": [
+          {
+            "name": "X-CSRF-Token",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error (400/401/403/404/409/413/429/503/504)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "key"
+                ],
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/applications/{app}/files/download": {
+      "get": {
+        "operationId": "get_applications_app_files_download",
+        "summary": "Потоковое скачивание, включая Range",
+        "parameters": [
+          {
+            "name": "app",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "File bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Structured error (400/401/403/404/409/413/429/503/504)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "File bytes",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1348,6 +1708,10 @@
           },
           "secret": {
             "type": "boolean"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 200
           }
         },
         "required": [
@@ -1538,11 +1902,11 @@
         "properties": {
           "disabled": {
             "type": "boolean"
+          },
+          "admin": {
+            "type": "boolean"
           }
         },
-        "required": [
-          "disabled"
-        ],
         "additionalProperties": false
       },
       "FileAction": {
@@ -1716,6 +2080,29 @@
           "status"
         ],
         "additionalProperties": true
+      },
+      "WorkspaceCreate": {
+        "type": "object",
+        "required": [
+          "name",
+          "cpu",
+          "memory_mib",
+          "disk_mib"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "cpu": {
+            "type": "number"
+          },
+          "memory_mib": {
+            "type": "integer"
+          },
+          "disk_mib": {
+            "type": "integer"
+          }
+        }
       }
     }
   }

@@ -8,10 +8,12 @@ export default function SpecForm({
   initial,
   onSave,
   button = "Сохранить",
+  onReveal,
 }: {
   initial: Spec;
   onSave: (spec: Spec) => Promise<void>;
   button?: string;
+  onReveal?: (key: string) => Promise<string>;
 }) {
   const [spec, setSpec] = useState(initial);
   const [jvm, setJvm] = useState(JSON.stringify(initial.jvmArgs));
@@ -194,6 +196,68 @@ export default function SpecForm({
       </p>
       <div className="section-heading">
         <h3>Переменные окружения</h3>
+        <label className="button">
+          Импорт .env
+          <input
+            className="visually-hidden"
+            type="file"
+            accept=".env,text/plain"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (!file) return;
+              try {
+                if (file.size > 1024 * 1024)
+                  throw new Error("Файл .env больше 1 MiB");
+                const rows: Env[] = [];
+                for (const line of (await file.text()).split(/\r?\n/)) {
+                  if (!line.trim() || line.trim().startsWith("#")) continue;
+                  const match =
+                    /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(
+                      line.trim(),
+                    );
+                  if (!match) throw new Error("Недопустимая строка .env");
+                  let value = match[2];
+                  if (value.startsWith('"')) value = JSON.parse(value);
+                  else if (value.startsWith("'") && value.endsWith("'"))
+                    value = value.slice(1, -1);
+                  rows.push({ key: match[1], value, secret: true });
+                }
+                const keys = [...spec.env, ...rows].map((row) => row.key);
+                if (new Set(keys).size !== keys.length)
+                  throw new Error("Импорт содержит повторяющиеся ключи ENV");
+                if (
+                  window.confirm(
+                    `Добавить ${rows.length} переменных: ${rows.map((row) => row.key).join(", ")}? Значения будут отмечены как секреты.`,
+                  )
+                )
+                  field("env", [...spec.env, ...rows]);
+              } catch (error) {
+                setError(error);
+              }
+            }}
+          />
+        </label>
+        <button
+          type="button"
+          onClick={() => {
+            const text =
+              spec.env
+                .filter((row) => !row.secret)
+                .map((row) => `${row.key}=${JSON.stringify(row.value)}`)
+                .join("\n") + "\n";
+            const url = URL.createObjectURL(
+              new Blob([text], { type: "text/plain" }),
+            );
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "application.env";
+            link.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          }}
+        >
+          Экспорт без секретов
+        </button>
         <button
           type="button"
           onClick={() =>
@@ -229,6 +293,37 @@ export default function SpecForm({
             />{" "}
             Секрет
           </label>
+          <input
+            aria-label={`Описание ENV ${i + 1}`}
+            placeholder="Описание"
+            maxLength={200}
+            value={row.description || ""}
+            onChange={(e) => envRow(i, { description: e.target.value })}
+          />
+          {row.secret &&
+            onReveal &&
+            initial.env.some(
+              (entry) => entry.key === row.key && entry.secret,
+            ) && (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (
+                    !window.confirm(
+                      `Показать сохранённый секрет ${row.key}? Действие попадёт в аудит.`,
+                    )
+                  )
+                    return;
+                  try {
+                    window.prompt(row.key, await onReveal(row.key));
+                  } catch (error) {
+                    setError(error);
+                  }
+                }}
+              >
+                Показать
+              </button>
+            )}
           <button
             type="button"
             aria-label={`Удалить ENV ${i + 1}`}

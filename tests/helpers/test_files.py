@@ -74,6 +74,32 @@ class LinuxFiles(unittest.TestCase):
             files.handle({"action": "extract", "path": "bad.zip"})
         self.assertFalse(Path(self.temp.name, "valid.txt").exists())
 
+    def test_tar_rejects_links_and_traversal_before_writing(self):
+        import io
+        import tarfile
+        for name, kind in (("../escape", tarfile.REGTYPE), ("link", tarfile.SYMTYPE), ("hard", tarfile.LNKTYPE)):
+            with self.subTest(name=name):
+                with tarfile.open(Path(self.temp.name, "bad.tar"), "w") as archive:
+                    safe=tarfile.TarInfo("valid.txt"); safe.size=4; archive.addfile(safe,io.BytesIO(b"safe"))
+                    item=tarfile.TarInfo(name); item.type=kind; item.linkname="/etc/passwd"; archive.addfile(item)
+                with self.assertRaises(files.Failure):
+                    files.handle({"action":"extract","path":"bad.tar"})
+                self.assertFalse(Path(self.temp.name,"valid.txt").exists())
+
+    def test_directory_copy_and_tar_round_trip(self):
+        import io
+        import tarfile
+        files.handle({"action":"mkdir","path":"source"})
+        files.handle({"action":"write","path":"source/config.json","text":'{"enabled":true}'})
+        files.handle({"action":"copy","path":"source","target":"copy"})
+        self.assertEqual(files.handle({"action":"read","path":"copy/config.json"})["text"],'{"enabled":true}')
+        with self.assertRaises(files.Failure):
+            files.handle({"action":"copy","path":"source","target":"source/nested"})
+        with tarfile.open(Path(self.temp.name,"good.tar.gz"),"w:gz") as archive:
+            entry=tarfile.TarInfo("./settings/app.txt");entry.size=4;archive.addfile(entry,io.BytesIO(b"data"))
+        files.handle({"action":"extract","path":"good.tar.gz"})
+        self.assertEqual(files.handle({"action":"read","path":"settings/app.txt"})["text"],"data")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,36 +1,19 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# JVM Dashboard
 
-## Getting Started
+Панель управления JVM-приложениями: Next.js 16, Kotlin/Ktor API и агент Ubuntu, MariaDB метаданных, Docker, XFS-квоты, Caddy, Prometheus и UFW.
 
-First, run the development server:
+MVP включает регистрацию по приглашениям, права и квоты рабочих областей, запуск на Temurin 8/11/17/21/25, файлы и ENV, ревизии, логи, метрики и установку готовых сборок одной командой.
+
+- [Установка, разработка и ограничения](docs/MVP.md)
+- [Результаты проверок](docs/MVP_VALIDATION.md)
+- [Архитектурные решения](docs/ADR-001-runtime.md)
+- [HTTP API](docs/openapi.json) и [WebSocket](docs/events.schema.json)
+- [Исходный план](docs/JVM_PANEL_PLAN.md)
 
 ```bash
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+./gradlew test installDist
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Исполнение приложений требует Ubuntu 24.04, Docker cgroups v2 и XFS project quotas. MariaDB приложений, SQL-редактор, backups и TOTP относятся к следующим этапам плана.

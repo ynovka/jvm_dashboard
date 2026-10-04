@@ -7,6 +7,7 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     services:
       mariadb:
         image: mariadb:10.11
@@ -40,8 +41,9 @@ jobs:
       - run: ./gradlew test installDist --no-daemon
       - run: python3 -m unittest discover -s tests/helpers -v
       - run: bash -n deployment/install.sh scripts/package-release.sh scripts/ubuntu-vm-smoke.sh
-      - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+      - run: google-chrome --version && npm run test:e2e
+        env:
+          PLAYWRIGHT_CHANNEL: chrome
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

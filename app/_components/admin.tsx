@@ -44,6 +44,13 @@ export default function Admin() {
     enabled: !!me.data?.admin,
     refetchInterval: 10000,
   });
+  const runtimes = useQuery<{
+    items: { jdk: number; image: string; enabled: boolean }[];
+  }>({
+    queryKey: ["admin-runtimes"],
+    queryFn: () => api("/admin/runtimes"),
+    enabled: !!me.data?.admin,
+  });
   async function change(body: unknown) {
     setBusy(true);
     setError(undefined);
@@ -102,6 +109,45 @@ export default function Admin() {
               <small>ДИСК БЮДЖЕТ</small>
               <strong>{node.data?.disk_mib ?? "—"} MiB</strong>
             </div>
+          </div>
+          <div className="panel">
+            <h2>Каталог JDK</h2>
+            <ErrorBox error={runtimes.error} />
+            {runtimes.data?.items.map((runtime) => (
+              <div className="section-heading" key={runtime.jdk}>
+                <span>
+                  Temurin {runtime.jdk} ·{" "}
+                  {runtime.enabled ? "Доступен" : "Отключён"}
+                </span>
+                <button
+                  onClick={async () => {
+                    const image = window.prompt(
+                      "Проверенный образ eclipse-temurin@sha256:…",
+                      runtime.image,
+                    );
+                    if (!image) return;
+                    const enabled = window.confirm(
+                      "Разрешить эту версию для новых ревизий? Отмена отключит её.",
+                    );
+                    try {
+                      await api(`/runtimes/${runtime.jdk}`, "PATCH", {
+                        image,
+                        enabled,
+                      });
+                      await runtimes.refetch();
+                    } catch (error) {
+                      setError(error);
+                    }
+                  }}
+                >
+                  Изменить
+                </button>
+              </div>
+            ))}
+            <p className="muted">
+              Существующие приложения сохраняют свой digest до изменения
+              конфигурации.
+            </p>
           </div>
           <div className="panel">
             <div className="section-heading">

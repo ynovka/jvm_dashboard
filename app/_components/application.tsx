@@ -8,6 +8,7 @@ import { api, App, Metrics, Operation, uptime, size, labels } from "./api";
 import SpecForm from "./spec-form";
 import Files from "./files";
 import HistoryChart from "./history-chart";
+import Revisions from "./revisions";
 
 function Console({ appId }: { appId: string }) {
   const [paused, setPaused] = useState(false);
@@ -326,6 +327,15 @@ export default function Application({ appId }: { appId: string }) {
                 <SpecForm
                   key={a.revision}
                   initial={a.spec}
+                  onReveal={async (key) =>
+                    (
+                      await api<{ value: string }>(
+                        `/applications/${appId}/environment/reveal`,
+                        "POST",
+                        { key },
+                      )
+                    ).value
+                  }
                   onSave={async (spec) => {
                     await api(`/applications/${appId}`, "PATCH", {
                       spec,
@@ -333,6 +343,11 @@ export default function Application({ appId }: { appId: string }) {
                     });
                     await app.refetch();
                   }}
+                />
+                <Revisions
+                  appId={appId}
+                  current={a.revision}
+                  onRestored={() => app.refetch()}
                 />
                 <div className="danger-zone">
                   <h3>Удаление приложения</h3>

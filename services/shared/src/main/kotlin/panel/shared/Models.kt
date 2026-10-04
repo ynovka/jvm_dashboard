@@ -24,7 +24,7 @@ fun hash(text: String): String = MessageDigest.getInstance("SHA-256").digest(tex
 class Problem(val code: String, override val message: String, val status: Int = 400) : RuntimeException(message)
 fun requireValid(value: Boolean, code: String, message: String, status: Int = 400) { if (!value) throw Problem(code, message, status) }
 
-@Serializable data class Env(val key: String, val value: String, val secret: Boolean = false)
+@Serializable data class Env(val key: String, val value: String, val secret: Boolean = false, val description: String = "")
 @Serializable data class Port(val host: Int, val container: Int, val protocol: String = "tcp", val public: Boolean = false)
 @Serializable data class Spec(
     val name: String, val jdk: Int = 21, val cpu: Double = 1.0, val memoryMiB: Int = 512,
@@ -55,7 +55,7 @@ fun validate(spec: Spec, minPort: Int = 10000, maxPort: Int = 60000) {
         "INVALID_HEALTH", "Health port должен совпадать с TCP-портом приложения")
     val protectedEnv = setOf("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS", "LD_PRELOAD", "LD_LIBRARY_PATH")
     requireValid(spec.env.size <= 100 && spec.env.distinctBy { it.key }.size == spec.env.size && spec.env.all {
-        it.key.matches(Regex("[A-Za-z_][A-Za-z0-9_]{0,127}")) && it.key !in protectedEnv && it.value.length <= 16384 && !it.value.contains('\u0000')
+        it.key.matches(Regex("[A-Za-z_][A-Za-z0-9_]{0,127}")) && it.key !in protectedEnv && it.value.length <= 16384 && !it.value.contains('\u0000') && !it.value.contains('\n') && !it.value.contains('\r') && it.description.length<=200
     }, "INVALID_ENV", "Проверьте ключи ENV, дубли и защищённые Java options")
     // Memory and executable-loading options are owned by the panel. No shell is involved.
     requireValid(spec.jvmArgs.size <= 32 && spec.jvmArgs.all {
